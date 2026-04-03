@@ -1,0 +1,7 @@
+.DS_Store
+.codex
+.direnv
+.env
+sqlc/
+stubs/
+knowledge_base/

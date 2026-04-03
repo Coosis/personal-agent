@@ -1,0 +1,9 @@
+{
+  "include": ["processor/src"],
+  "exclude": ["**/node_modules", "**/__pycache__"],
+  "stubPath": "./stubs",
+  "pythonVersion": "3.13",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false,
+}

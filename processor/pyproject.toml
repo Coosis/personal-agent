@@ -1,0 +1,4 @@
+[project]
+name = "personal-agent-processor"
+version = "0.1.0"
+description = "Document processing pipeline for Personal Knowledge Base Agent"

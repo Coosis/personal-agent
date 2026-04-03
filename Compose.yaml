@@ -1,0 +1,19 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    restart: always
+    shm_size: 128mb
+    environment:
+      POSTGRES_DB: agentdb
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./sql:/sql
+    ports:
+      - 5433:5432
+
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - 8081:8080
+
