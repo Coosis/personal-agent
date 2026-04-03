@@ -7,12 +7,12 @@ class Settings(BaseSettings):
     """Processor configuration from environment variables."""
 
     # Database
-    database_url: str = "postgres://postgres:postgres@localhost:5432/agentdb"
+    database_url: str = "postgres://postgres:postgres@localhost:5433/agentdb"
 
     # Embedding Service (Alibaba DashScope)
     alibaba_api_key: str = ""
-    alibaba_embedding_model: str = "text-embedding-v3"
-    embedding_dimensions: int = 1536
+    alibaba_embedding_model: str = "text-embedding-v4"
+    embedding_dimensions: int = 1024  # text-embedding-v4 defaults to 1024
 
     # Processing
     poll_interval_seconds: int = 5
@@ -22,10 +22,6 @@ class Settings(BaseSettings):
     # Chunking
     chunk_size: int = 512
     chunk_overlap: int = 50
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
 
 @lru_cache()

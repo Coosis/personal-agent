@@ -54,6 +54,11 @@ func (w *Watcher) Start(ctx context.Context) error {
 		logrus.WithError(err).Warn("startup scan encountered errors")
 	}
 
+	// Clean up old processed file events
+	if err := w.cleanupOldFileEvents(ctx); err != nil {
+		logrus.WithError(err).Warn("failed to cleanup old file events")
+	}
+
 	// Add watch directories
 	dirs, err := w.db.Queries.ListWatchDirectories(ctx)
 	if err != nil {
@@ -442,16 +447,18 @@ func (w *Watcher) createFileEvent(
 	return nil
 }
 
-// markDocumentDeleted marks a document as deleted
+// markDocumentDeleted hard-deletes a document and its chunks
 func (w *Watcher) markDocumentDeleted(ctx context.Context, id int64) error {
-	_, err := w.db.Queries.UpdateDocumentStatus(ctx, sqlc.UpdateDocumentStatusParams{
-		ID:               id,
-		ProcessingStatus: "deleted",
-	})
+	// Delete chunks first (redundant due to CASCADE, but explicit is safer)
+	if err := w.db.Queries.DeleteChunksByDocument(ctx, id); err != nil {
+		logrus.WithError(err).WithField("doc_id", id).Warn("failed to delete chunks")
+	}
+	// Delete the document (cascades to chunks via FK)
+	_, err := w.db.Queries.DeleteDocument(ctx, id)
 	return err
 }
 
-// listAllDocuments returns all non-deleted documents indexed by path
+// listAllDocuments returns all documents indexed by path
 func (w *Watcher) listAllDocuments(ctx context.Context) (map[string]sqlc.Document, error) {
 	// Use ListDocuments with large limit to get all
 	rows, err := w.db.Queries.ListDocuments(ctx, sqlc.ListDocumentsParams{
@@ -464,17 +471,21 @@ func (w *Watcher) listAllDocuments(ctx context.Context) (map[string]sqlc.Documen
 
 	result := make(map[string]sqlc.Document, len(rows))
 	for _, doc := range rows {
-		// Skip deleted documents
-		if doc.ProcessingStatus == "deleted" {
-			continue
-		}
 		result[doc.Path] = doc
 	}
 
 	return result, nil
 }
 
-
+// cleanupOldFileEvents deletes processed file events older than 7 days
+func (w *Watcher) cleanupOldFileEvents(ctx context.Context) error {
+	err := w.db.Queries.DeleteOldProcessedFileEvents(ctx)
+	if err != nil {
+		return err
+	}
+	logrus.Debug("cleaned up old processed file events")
+	return nil
+}
 
 // matchGlob performs simple glob matching
 func matchGlob(name, pattern string) bool {

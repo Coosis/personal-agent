@@ -53,6 +53,7 @@
                   # Desired Python packages
                   numpy
                   psycopg
+                  psycopg-pool
                   schedule
                   pydantic
                   pydantic-settings

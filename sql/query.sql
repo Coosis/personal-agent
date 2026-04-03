@@ -1,4 +1,7 @@
 -- Documents queries
+-- name: ListDocuments :many
+SELECT * FROM documents ORDER BY updated_at DESC LIMIT $1 OFFSET $2;
+
 -- name: GetDocumentByID :one
 SELECT * FROM documents WHERE id = $1;
 
@@ -7,6 +10,9 @@ SELECT * FROM documents WHERE path = $1;
 
 -- name: GetDocumentByPathForUpdate :one
 SELECT * FROM documents WHERE path = $1 FOR UPDATE;
+
+-- name: GetDocumentByChecksum :one
+SELECT * FROM documents WHERE checksum = $1;
 
 -- name: UpsertDocument :one
 INSERT INTO documents (
@@ -24,12 +30,6 @@ ON CONFLICT (path) DO UPDATE SET
     updated_at = NOW()
 RETURNING *;
 
--- name: GetDocumentByChecksum :one
-SELECT * FROM documents WHERE checksum = $1;
-
--- name: ListDocuments :many
-SELECT * FROM documents ORDER BY updated_at DESC LIMIT $1 OFFSET $2;
-
 -- name: CreateDocument :one
 INSERT INTO documents (
     path, filename, extension, mime_type, size_bytes, checksum, content_hash,
@@ -38,27 +38,14 @@ INSERT INTO documents (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 ) RETURNING *;
 
--- name: UpdateDocument :one
-UPDATE documents SET
-    filename = $2,
-    extension = $3,
-    mime_type = $4,
-    size_bytes = $5,
-    checksum = $6,
-    content_hash = $7,
-    last_modified = $8,
-    metadata = $9,
-    processing_status = $10,
-    error_message = $11,
-    updated_at = NOW()
-WHERE id = $1 RETURNING *;
-
 -- name: UpdateDocumentStatus :one
 UPDATE documents SET
     processing_status = $2,
     error_message = $3,
     updated_at = NOW()
 WHERE id = $1 RETURNING *;
+
+
 
 -- name: DeleteDocument :one
 DELETE FROM documents WHERE id = $1 RETURNING *;
@@ -241,6 +228,11 @@ LEFT JOIN documents d ON fe.path = d.path
 WHERE fe.processed = false
 ORDER BY fe.created_at 
 LIMIT $1;
+
+-- name: DeleteOldProcessedFileEvents :exec
+DELETE FROM file_events 
+WHERE processed = true 
+  AND created_at < NOW() - interval '7 days';
 
 -- Configuration queries
 -- name: GetConfig :one

@@ -5,3 +5,4 @@
 sqlc/
 stubs/
 knowledge_base/
+__pycache__

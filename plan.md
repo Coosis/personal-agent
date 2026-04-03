@@ -297,44 +297,57 @@ The background processor is implemented in Python because:
 - **Document parsing** ecosystem is Python-first (PyPDF, python-docx, etc.)
 - **Simpler codebase** - no cross-service calls for the processing pipeline
 
-### 6.2 Processor Flow
+### 6.2 Processor Flow (Lease-Based Distributed Locking)
+
+The processor uses a lease mechanism for safe distributed processing:
 
 ```
-┌──────────────┐
-│ Poll DB for  │
-│ pending docs │
-└──────┬───────┘
-       ▼
 ┌──────────────────┐
-│ Get document and │
-│ file content     │
+│ Poll DB for      │
+│ available docs   │
+│ (pending OR      │
+│  expired lease)  │
 └────────┬─────────┘
+         │
          ▼
 ┌──────────────────┐
-│ Parse document   │
-│ (Unstructured.io)│
+│ TX 1: Acquire    │
+│ lease (60s)      │
+│ set processing   │
 └────────┬─────────┘
+         │
          ▼
 ┌──────────────────┐
-│ Semantic chunking│
-│ (LangChain)      │
+│ Start heartbeat  │
+│ thread (renews   │
+│ every 30s)       │
 └────────┬─────────┘
+         │
          ▼
 ┌──────────────────┐
-│ Get embeddings   │
-│ (Alibaba API)    │
+│ Do heavy work    │
+│ (file I/O,       │
+│ embeddings)      │
 └────────┬─────────┘
+         │
          ▼
 ┌──────────────────┐
-│ Store chunks     │
-│ in pgvector      │
+│ TX 2: Store      │
+│ chunks, mark     │
+│ completed        │
 └────────┬─────────┘
+         │
          ▼
 ┌──────────────────┐
-│ Mark document    │
-│ as completed     │
+│ Stop heartbeat   │
 └──────────────────┘
 ```
+
+**Lease Mechanism:**
+- Worker acquires 60-second lease on document
+- Heartbeat thread renews lease every 30 seconds
+- If worker crashes, lease expires and another worker picks up the job
+- Lease is released on completion or failure
 
 ### 6.3 Processor Components
 
@@ -357,6 +370,13 @@ pending ──────► processing ──────► completed
     │                ▼
     └────────────► failed (permanent)
 ```
+
+**Lease States:**
+- `lease_expires_at IS NULL`: Document not currently being processed
+- `lease_expires_at < NOW()`: Lease expired, document available for pickup
+- `lease_expires_at > NOW()`: Document actively being processed by worker
+
+**Recovery:** Documents with expired leases are automatically re-picked by the `GetDocumentForProcessing` query.
 
 ---
 
@@ -624,7 +644,7 @@ python -m processor
 
 ```bash
 # Database
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/agentdb
+DATABASE_URL=postgres://postgres:postgres@localhost:5433/agentdb
 
 # Embedding Service (Alibaba DashScope)
 # Used only for: semantic chunking, vector indexing

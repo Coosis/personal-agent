@@ -25,17 +25,33 @@ class Chunk:
 def chunk_document(content: str, extension: str, chunk_size: int = 512, chunk_overlap: int = 50) -> List[Chunk]:
     """Chunk a document based on its type."""
     
+    # Skip empty content
+    if not content or not content.strip():
+        return []
+    
     # Markdown files - use header-based chunking
     if extension in (".md", ".markdown"):
-        return chunk_markdown(content, chunk_size, chunk_overlap)
+        chunks = chunk_markdown(content, chunk_size, chunk_overlap)
     
     # Code files - use language-aware chunking
     elif extension in (".py", ".js", ".ts", ".go", ".java", ".cpp", ".c", ".rs"):
-        return chunk_code(content, extension, chunk_size, chunk_overlap)
+        chunks = chunk_code(content, extension, chunk_size, chunk_overlap)
     
     # Default - recursive character chunking
     else:
-        return chunk_recursive(content, chunk_size, chunk_overlap)
+        chunks = chunk_recursive(content, chunk_size, chunk_overlap)
+    
+    # Filter out empty/whitespace-only chunks
+    filtered = [c for c in chunks if c.content and c.content.strip()]
+    
+    # Reindex after filtering
+    for i, chunk in enumerate(filtered):
+        chunk.index = i
+    
+    if len(filtered) < len(chunks):
+        logger.debug(f"Filtered {len(chunks) - len(filtered)} empty chunks")
+    
+    return filtered
 
 
 def chunk_markdown(content: str, chunk_size: int, chunk_overlap: int) -> List[Chunk]:
