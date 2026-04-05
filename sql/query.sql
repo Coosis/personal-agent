@@ -53,6 +53,12 @@ DELETE FROM documents WHERE id = $1 RETURNING *;
 -- name: GetDocumentsByStatus :many
 SELECT * FROM documents WHERE processing_status = $1 ORDER BY updated_at DESC;
 
+-- name: ListDocumentsUnderPath :many
+SELECT * FROM documents
+WHERE path = @path
+   OR path LIKE @subtree_pattern::text
+ORDER BY path;
+
 -- Chunks queries
 -- name: CreateChunk :one
 INSERT INTO chunks (
@@ -165,8 +171,8 @@ SELECT * FROM agent_runs ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 
 -- Watch directories queries
 -- name: CreateWatchDirectory :one
-INSERT INTO watch_directories (path, pattern, recursive, enabled, priority, metadata)
-VALUES ($1, $2, $3, $4, $5, $6) RETURNING *;
+INSERT INTO watch_directories (path, pattern, recursive, priority, metadata)
+VALUES ($1, $2, $3, $4, $5) RETURNING *;
 
 -- name: GetWatchDirectoryByID :one
 SELECT * FROM watch_directories WHERE id = $1;
@@ -174,16 +180,26 @@ SELECT * FROM watch_directories WHERE id = $1;
 -- name: GetWatchDirectoryByPath :one
 SELECT * FROM watch_directories WHERE path = $1;
 
+-- name: GetWatchRecursiveDirectoryByPath :one
+SELECT * FROM watch_directories 
+WHERE path = $1 AND recursive = true
+LIMIT 1;
+
 -- name: ListWatchDirectories :many
-SELECT * FROM watch_directories WHERE enabled = true ORDER BY priority DESC;
+SELECT * FROM watch_directories ORDER BY priority DESC;
+
+-- name: ListWatchDirectoriesUnderPath :many
+SELECT * FROM watch_directories
+WHERE path = @path
+   OR path LIKE @subtree_pattern::text
+ORDER BY length(path) DESC, path;
 
 -- name: UpdateWatchDirectory :one
 UPDATE watch_directories SET
     pattern = $2,
     recursive = $3,
-    enabled = $4,
-    priority = $5,
-    metadata = $6
+    priority = $4,
+    metadata = $5
 WHERE id = $1 RETURNING *;
 
 -- name: DeleteWatchDirectory :one
@@ -198,13 +214,38 @@ VALUES ($1, $2, $3, $4, $5) RETURNING *;
 SELECT * FROM file_events WHERE path = $1 ORDER BY created_at DESC LIMIT $2;
 
 -- name: GetUnprocessedFileEvents :many
-SELECT * FROM file_events WHERE processed = false ORDER BY created_at LIMIT $1;
+SELECT fe.*
+FROM file_events fe
+WHERE fe.processed = false
+  AND NOT EXISTS (
+      SELECT 1
+      FROM file_events earlier
+      WHERE earlier.path = fe.path
+        AND earlier.processed = false
+        AND (
+            earlier.created_at < fe.created_at
+            OR (earlier.created_at = fe.created_at AND earlier.id < fe.id)
+        )
+  )
+ORDER BY fe.created_at, fe.id
+LIMIT $1;
 
 -- name: GetUnprocessedFileEventsForUpdate :many
-SELECT * FROM file_events 
-WHERE processed = false 
-ORDER BY created_at 
-LIMIT $1 
+SELECT fe.*
+FROM file_events fe
+WHERE fe.processed = false
+  AND NOT EXISTS (
+      SELECT 1
+      FROM file_events earlier
+      WHERE earlier.path = fe.path
+        AND earlier.processed = false
+        AND (
+            earlier.created_at < fe.created_at
+            OR (earlier.created_at = fe.created_at AND earlier.id < fe.id)
+        )
+  )
+ORDER BY fe.created_at, fe.id
+LIMIT $1
 FOR UPDATE SKIP LOCKED;
 
 -- name: MarkFileEventProcessed :one
@@ -226,7 +267,17 @@ SELECT
 FROM file_events fe
 LEFT JOIN documents d ON fe.path = d.path
 WHERE fe.processed = false
-ORDER BY fe.created_at 
+  AND NOT EXISTS (
+      SELECT 1
+      FROM file_events earlier
+      WHERE earlier.path = fe.path
+        AND earlier.processed = false
+        AND (
+            earlier.created_at < fe.created_at
+            OR (earlier.created_at = fe.created_at AND earlier.id < fe.id)
+        )
+  )
+ORDER BY fe.created_at, fe.id
 LIMIT $1;
 
 -- name: DeleteOldProcessedFileEvents :exec

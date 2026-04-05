@@ -17,6 +17,10 @@ import (
 	sqlc "github.com/Coosis/personal-agent/sqlc"
 )
 
+const (
+	WORKER_EMPTY_SLEEP_DURATION = 3 * time.Second
+)
+
 // ErrNoEvents indicates no unprocessed events available
 var ErrNoEvents = fmt.Errorf("no unprocessed events")
 
@@ -73,7 +77,7 @@ func (p *Pool) worker(ctx context.Context, id int) {
 					logrus.WithError(err).WithField("worker_id", id).Error("failed to process event")
 				}
 				// Sleep briefly to avoid hammering the DB when empty
-				time.Sleep(time.Second)
+				time.Sleep(WORKER_EMPTY_SLEEP_DURATION)
 			}
 		}
 	}
@@ -146,27 +150,33 @@ func (p *Pool) handleCreateOrModifyTx(ctx context.Context, q *sqlc.Queries, even
 
 // handleDeleteTx handles delete events within a transaction
 func (p *Pool) handleDeleteTx(ctx context.Context, q *sqlc.Queries, event sqlc.FileEvent) error {
+	// Editors like Vim often implement save as delete+create/rename.
+	// If the path already exists again by the time we process the delete,
+	// treat the delete as stale and let the later create/modify event win.
+	stat, statErr := os.Stat(event.Path)
+	if statErr == nil {
+		if !stat.IsDir() {
+			return p.markEventProcessedWithTx(ctx, q, event.ID, 0, nil)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return p.markEventProcessedWithTx(ctx, q, event.ID, 0, fmt.Errorf("failed to stat delete path: %w", statErr))
+	}
+
 	// Find existing document by path
 	doc, err := q.GetDocumentByPath(ctx, event.Path)
 	if err != nil && err != pgx.ErrNoRows {
 		return fmt.Errorf("failed to get document: %w", err)
 	}
 
-	var docID int64
 	if err == nil {
-		docID = doc.ID
-		// Soft delete - mark as deleted
-		_, err = q.UpdateDocumentStatus(ctx, sqlc.UpdateDocumentStatusParams{
-			ID:               doc.ID,
-			ProcessingStatus: "deleted",
-		})
+		_, err = q.DeleteDocument(ctx, doc.ID)
 		if err != nil {
-			return fmt.Errorf("failed to mark document deleted: %w", err)
+			return fmt.Errorf("failed to delete document: %w", err)
 		}
 	}
 
-	// Mark event as processed
-	return p.markEventProcessedWithTx(ctx, q, event.ID, docID, nil)
+	// Once the document row is gone, the event must not point at the deleted FK.
+	return p.markEventProcessedWithTx(ctx, q, event.ID, 0, nil)
 }
 
 // fileInfo holds information about a file

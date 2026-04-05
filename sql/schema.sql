@@ -145,13 +145,10 @@ CREATE TABLE watch_directories (
     path TEXT UNIQUE NOT NULL,
     pattern TEXT DEFAULT '*',
     recursive BOOLEAN DEFAULT true,
-    enabled BOOLEAN DEFAULT true,
     priority INTEGER DEFAULT 0,
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
-
-CREATE INDEX idx_watch_directories_enabled ON watch_directories(enabled);
 
 -- File events log for tracking changes
 -- Lightweight queue - checksum stored in documents table (computed by worker)

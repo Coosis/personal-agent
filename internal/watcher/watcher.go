@@ -2,13 +2,14 @@ package watcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
-	"github.com/fsnotify/fsnotify"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/sirupsen/logrus"
 
@@ -16,37 +17,65 @@ import (
 	sqlc "github.com/Coosis/personal-agent/sqlc"
 )
 
+var (
+	ErrWatcherNotRunning = errors.New("watcher is not running")
+)
+
 // Watcher handles file system watching and change detection
 type Watcher struct {
+	stop     chan<- struct{}
+	fsevents <-chan FSChange
+	session  *Session
+	mu       sync.Mutex
 	db       *db.DB
-	fsnotify *fsnotify.Watcher
-	mu       sync.RWMutex
-	running  bool
-	stopCh   chan struct{}
+}
+
+const (
+	FSOpCreate = "create"
+	FSOpModify = "modify"
+	FSOpDelete = "delete"
+)
+
+type FSChange struct {
+	Op        string // should only be create, delete, or modify
+	Path      string
+	IsDir     bool
+	SizeBytes *int64
 }
 
 // NewWatcher creates a new file watcher
 func NewWatcher(database *db.DB) (*Watcher, error) {
-	fsw, err := fsnotify.NewWatcher()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create fsnotify watcher: %w", err)
-	}
-
 	return &Watcher{
-		db:       database,
-		fsnotify: fsw,
-		stopCh:   make(chan struct{}),
+		db: database,
 	}, nil
 }
 
-// Start starts the file watcher including startup scan
+// if already have a session -> no-op
+// otherwise:
+// 1. creates a new session if not present
+// 2. spawn a goroutine to run the new session's event loop
+// 3. spawn a goroutine to handle fs events and create file events in db
+// 4. performs startup scan
 func (w *Watcher) Start(ctx context.Context) error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if w.running {
+	if w.session != nil {
+		logrus.Info("watcher session already running, skipping start")
+		w.mu.Unlock()
 		return nil
 	}
+	stop := make(chan struct{})
+	fsevents := make(chan FSChange)
+	session, err := NewWatchSession(stop, fsevents)
+	if err != nil {
+		w.mu.Unlock()
+		return err
+	}
+	w.session = session
+	w.stop = stop
+	w.fsevents = fsevents
+	go w.handle_fs_events(ctx, stop, fsevents)
+	go session.eventLoop()
+	w.mu.Unlock()
 
 	// Perform startup scan to catch changes while offline
 	logrus.Info("starting file watcher startup scan")
@@ -62,7 +91,8 @@ func (w *Watcher) Start(ctx context.Context) error {
 	// Add watch directories
 	dirs, err := w.db.Queries.ListWatchDirectories(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to list watch directories: %w", err)
+		w.Stop()
+		return ErrFailedToListDirectories
 	}
 
 	for _, dir := range dirs {
@@ -71,50 +101,151 @@ func (w *Watcher) Start(ctx context.Context) error {
 			"path":      dir.Path,
 			"recursive": recursive,
 		}).Info("adding watch directory")
-		if err := w.addWatchRecursive(dir.Path, recursive); err != nil {
+		err := session.AddWatchRecursive(dir.Path, recursive)
+		if err != nil && !errors.Is(err, ErrWatcherNotRunning) {
 			logrus.WithError(err).WithField("path", dir.Path).Warn("failed to watch directory")
 		}
 	}
-
-	w.running = true
-
-	// Start event loop
-	go w.eventLoop(ctx)
 
 	logrus.Info("file watcher started")
 	return nil
 }
 
-// Stop stops the file watcher
-func (w *Watcher) Stop() error {
+func (w *Watcher) Stop() {
+	w.mu.Lock()
+	session := w.session
+	stop := w.stop
+	w.session = nil
+	w.stop = nil
+	w.fsevents = nil
+	w.mu.Unlock()
+
+	if stop != nil {
+		close(stop)
+	}
+	if session != nil {
+		err := session.Stop()
+		if err != nil {
+			logrus.WithError(err).Warn("error stopping watcher session")
+		}
+	}
+}
+
+func (w *Watcher) IsRunning() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.session != nil
+}
 
-	if !w.running {
-		return nil
+func (w *Watcher) handle_fs_events(
+	ctx context.Context,
+	stop <-chan struct{},
+	c <-chan FSChange,
+) {
+	for {
+		select {
+		case <-stop:
+			return
+		case event, ok := <-c:
+			if !ok {
+				return
+			}
+			if err := w.handleEvent(ctx, event); err != nil {
+				logrus.WithError(err).WithFields(logrus.Fields{
+					"path": event.Path,
+					"type": event.Op,
+				}).Warn("failed to handle fs change event")
+			}
+		}
 	}
+}
 
-	close(w.stopCh)
-	w.running = false
-
-	if err := w.fsnotify.Close(); err != nil {
-		return fmt.Errorf("failed to close fsnotify watcher: %w", err)
+func (w *Watcher) handleEvent(ctx context.Context, event FSChange) error {
+	switch event.Op {
+	case FSOpDelete:
+		if event.IsDir {
+			return w.handleDirectoryDelete(ctx, event.Path)
+		}
+		// Check if it's a document we know about
+		_, err := w.db.Queries.GetDocumentByPath(ctx, event.Path)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				logrus.WithField("path", event.Path).Debug("ignoring delete event for unknown file")
+				return nil
+			}
+			return fmt.Errorf("failed to query document by path: %w", err)
+		}
+		if err := w.createFileEvent(ctx, event.Path, event.Op, nil); err != nil {
+			return err
+		}
+	case FSOpCreate:
+		if event.IsDir {
+			pd, err := w.findWatchedAncestor(ctx, event.Path)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					// no ancestor being watched found, usually doesn't happen
+					logrus.WithField("path", event.Path).Debug("created/modified directory has no watched ancestor, ignoring")
+					return nil
+				}
+				return fmt.Errorf("failed to find watched ancestor: %w", err)
+			}
+			if pd.Recursive.Valid && pd.Recursive.Bool {
+				// recursive
+				if err := w.AddWatch(event.Path, true); err != nil && !errors.Is(err, ErrWatcherNotRunning) {
+					return fmt.Errorf("failed to add recursive watch for new dir: %w", err)
+				}
+			}
+			// non-recursive - no need to add watch
+			return nil
+		}
+		return w.handleFileCreateOrModify(ctx, event.Path, event.Op, event.SizeBytes)
+	case FSOpModify:
+		if event.IsDir {
+			return nil
+		}
+		return w.handleFileCreateOrModify(ctx, event.Path, event.Op, event.SizeBytes)
+	default:
+		logrus.WithField("op", event.Op).Debug("unhandled fs change event")
 	}
-
-	logrus.Info("file watcher stopped")
 	return nil
 }
 
-// AddWatchLocked adds a new directory to watch under the protection of mutex,
-// also is exported for service to call
-func (w *Watcher) AddWatchLocked(dirPath string, recursive bool) error {
+// AddWatch adds a new directory to the active watcher session.
+func (w *Watcher) AddWatch(dirPath string, recursive bool) error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	return w.addWatchRecursive(dirPath, recursive)
+	session := w.session
+	w.mu.Unlock()
+	if session == nil {
+		return ErrWatcherNotRunning
+	}
+	return session.AddWatchRecursive(dirPath, recursive)
 }
 
-// ScanDirectory performs an initial scan of a directory to find existing files.
+// RemoveWatch removes a directory from watching
+func (w *Watcher) RemoveWatch(dirPath string) error {
+	w.mu.Lock()
+	session := w.session
+	w.mu.Unlock()
+	if session == nil {
+		return ErrWatcherNotRunning
+	}
+	return session.RemoveWatch(dirPath)
+}
+
+func (w *Watcher) RemoveWatchTree(dirPath string, recursive bool) error {
+	w.mu.Lock()
+	session := w.session
+	w.mu.Unlock()
+	if session == nil {
+		return ErrWatcherNotRunning
+	}
+	return session.RemoveWatchTree(dirPath, recursive)
+}
+
+// ---------------------------------------------------------------------------------------
+
+// ScanDirectory performs an initial scan of a directory to find existing files,
+// called by the service layer.
 // This is called asynchronously when a new watch directory is added.
 // Does NOT need mutex - only reads/writes DB, not watcher state.
 func (w *Watcher) ScanDirectory(ctx context.Context, dirPath string, recursive bool) error {
@@ -147,63 +278,49 @@ func (w *Watcher) ScanDirectory(ctx context.Context, dirPath string, recursive b
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"path": dirPath,
+		"path":  dirPath,
 		"found": len(foundPaths),
 	}).Info("directory scan complete")
 
 	return nil
 }
 
-// addWatch adds a single path to fsnotify, should be called with mutex held
-func (w *Watcher) addWatch(path string) error {
-	// Check if path exists
-	info, err := os.Stat(path)
+// startupScan scans all watch directories and compares with database
+func (w *Watcher) startupScan(ctx context.Context) error {
+	dirs, err := w.db.Queries.ListWatchDirectories(ctx)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return ErrPathDoesNotExist
+		return fmt.Errorf("failed to list watch directories: %w", err)
+	}
+
+	// Build set of existing documents by path
+	existingDocs, err := w.listAllDocuments(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list documents: %w", err)
+	}
+
+	foundPaths := make(map[string]bool)
+
+	// Scan each watch directory
+	for _, dir := range dirs {
+		logrus.WithField("path", dir.Path).Debug("scanning directory")
+
+		recursive := dir.Recursive.Valid && dir.Recursive.Bool
+		if err := w.scanDirectory(ctx, dir.Path, recursive, dir.Pattern, existingDocs, foundPaths); err != nil {
+			logrus.WithError(err).WithField("path", dir.Path).Warn("error scanning directory")
 		}
-		return ErrFailedToStatPath
-	}
-	if !info.IsDir() {
-		return ErrPathNotADirectory
 	}
 
-	if err := w.fsnotify.Add(path); err != nil {
-		return fmt.Errorf("fsnotify add failed for %s: %w", path, err)
-	}
-	logrus.WithField("path", path).Info("added fsnotify watch")
-
-	return nil
-}
-
-// addWatchRecursive recursively adds directories to watch
-// by walking the directory given and calling `addWatch()`
-// should be called with mutex held
-func (w *Watcher) addWatchRecursive(path string, recursive bool) error {
-	if err := w.addWatch(path); err != nil {
-		return err
-	}
-
-	if !recursive {
-		return nil
-	}
-
-	return filepath.Walk(path, func(walkPath string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if info.IsDir() && walkPath != path {
-			if err := w.addWatch(walkPath); err != nil {
-				logrus.WithError(err).WithField("path", walkPath).Debug("failed to add watch")
+	// Check for deleted files
+	for path, _ := range existingDocs {
+		if !foundPaths[path] {
+			logrus.WithField("path", path).Info("detected deleted file during startup scan")
+			if err := w.createFileEvent(ctx, path, "delete", nil); err != nil {
+				logrus.WithError(err).WithField("path", path).Warn("failed to create delete file event")
 			}
 		}
-		return nil
-	})
-}
+	}
 
-// RemoveWatch removes a directory from watching
-func (w *Watcher) RemoveWatch(dirPath string) error {
-	return w.fsnotify.Remove(dirPath)
+	return nil
 }
 
 // scanDirectory scans a directory, respecting the recursive setting
@@ -277,6 +394,8 @@ func (w *Watcher) scanDirectory(
 	return nil
 }
 
+// ---------------------------------------------------------------------------------------
+
 // processFile checks if a file is new or modified and creates an event
 // Uses only mtime comparison (fast) - worker will do checksum verification
 func (w *Watcher) processFile(
@@ -288,151 +407,38 @@ func (w *Watcher) processFile(
 	existing, ok := existingDocs[path]
 	if !ok {
 		// New file
-		logrus.WithField("path", path).Info("detected new file during startup scan")
-		return w.createFileEvent(ctx, path, "create", info)
+		logrus.WithField("path", path).Info("detected new file during scan")
+		return w.createFileEvent(ctx, path, "create", sizeBytesFromInfo(info))
 	}
 
 	// Check if modified (mtime only - fast, no I/O)
 	// Worker will verify checksum to detect false positives
 	if info.ModTime().After(existing.LastModified.Time) {
-		logrus.WithField("path", path).Info("detected modified file during startup scan")
-		return w.createFileEvent(ctx, path, "modify", info)
+		logrus.WithField("path", path).Info("detected modified file during scan")
+		return w.createFileEvent(ctx, path, "modify", sizeBytesFromInfo(info))
 	}
 
 	return nil
 }
 
-// startupScan scans all watch directories and compares with database
-func (w *Watcher) startupScan(ctx context.Context) error {
-	dirs, err := w.db.Queries.ListWatchDirectories(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list watch directories: %w", err)
-	}
-
-	// Build set of existing documents by path
-	existingDocs, err := w.listAllDocuments(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list documents: %w", err)
-	}
-
-	foundPaths := make(map[string]bool)
-
-	// Scan each watch directory
-	for _, dir := range dirs {
-		logrus.WithField("path", dir.Path).Debug("scanning directory")
-
-		recursive := dir.Recursive.Valid && dir.Recursive.Bool
-		if err := w.scanDirectory(ctx, dir.Path, recursive, dir.Pattern, existingDocs, foundPaths); err != nil {
-			logrus.WithError(err).WithField("path", dir.Path).Warn("error scanning directory")
-		}
-	}
-
-	// Check for deleted files
-	for path, doc := range existingDocs {
-		if !foundPaths[path] {
-			logrus.WithField("path", path).Info("detected deleted file during startup scan")
-			if err := w.markDocumentDeleted(ctx, doc.ID); err != nil {
-				logrus.WithError(err).WithField("path", path).Warn("failed to mark document as deleted")
-			}
-		}
-	}
-
-	return nil
-}
-
-// eventLoop handles fsnotify events
-func (w *Watcher) eventLoop(ctx context.Context) {
-	for {
-		select {
-		case <-w.stopCh:
-			return
-		case <-ctx.Done():
-			return
-		case event, ok := <-w.fsnotify.Events:
-			if !ok {
-				return
-			}
-			w.handleEvent(ctx, event)
-		case err, ok := <-w.fsnotify.Errors:
-			if !ok {
-				return
-			}
-			logrus.WithError(err).Error("fsnotify error")
-		}
-	}
-}
-
-// handleEvent processes a single fsnotify event and calls `createFileEvent()` or `markDocumentDeleted()` accordingly
-func (w *Watcher) handleEvent(ctx context.Context, event fsnotify.Event) {
-	logrus.WithFields(logrus.Fields{
-		"op":   event.Op.String(),
-		"name": event.Name,
-	}).Info("fsnotify event")
-
-	switch {
-	case event.Op&fsnotify.Create == fsnotify.Create:
-		info, err := os.Stat(event.Name)
-		if err != nil {
-			logrus.WithError(err).WithField("path", event.Name).Debug("failed to stat file")
-			return
-		}
-
-		if info.IsDir() {
-			// New directory - add watcher if recursive
-			if err := w.addWatchRecursive(event.Name, true); err != nil {
-				logrus.WithError(err).WithField("path", event.Name).Debug("failed to watch new directory")
-			}
-			return
-		}
-
-		if err := w.createFileEvent(ctx, event.Name, "create", info); err != nil {
-			logrus.WithError(err).WithField("path", event.Name).Warn("failed to create file event")
-		}
-
-	case event.Op&fsnotify.Write == fsnotify.Write:
-		info, err := os.Stat(event.Name)
-		if err != nil {
-			return
-		}
-		if info.IsDir() {
-			return
-		}
-
-		if err := w.createFileEvent(ctx, event.Name, "modify", info); err != nil {
-			logrus.WithError(err).WithField("path", event.Name).Warn("failed to create file event")
-		}
-
-	case event.Op&fsnotify.Remove == fsnotify.Remove, event.Op&fsnotify.Rename == fsnotify.Rename:
-		// Check if it's a document we know about
-		doc, err := w.db.Queries.GetDocumentByPath(ctx, event.Name)
-		if err != nil {
-			return // Not tracked, ignore
-		}
-
-		if err := w.markDocumentDeleted(ctx, doc.ID); err != nil {
-			logrus.WithError(err).WithField("path", event.Name).Warn("failed to mark document as deleted")
-		}
-	default:
-		logrus.WithField("op", event.Op.String()).Debug("unhandled fsnotify event")
-	}
-}
-
-// createFileEvent creates a file_event record.
-// Note: Checksum is NOT computed here (avoid blocking fsnotify).
+// creates a file_event record in db
 // The worker will compute checksum when processing the event.
 func (w *Watcher) createFileEvent(
 	ctx context.Context,
 	path string,
 	eventType string,
-	info os.FileInfo,
+	sizeBytes *int64,
 ) error {
+	size := pgtype.Int8{}
+	if sizeBytes != nil {
+		size = pgtype.Int8{Int64: *sizeBytes, Valid: true}
+	}
 	// Create the file event immediately (fast, non-blocking)
 	// Worker will compute checksum and handle deduplication
 	_, err := w.db.Queries.CreateFileEvent(ctx, sqlc.CreateFileEventParams{
 		Path:      path,
 		EventType: eventType,
-		SizeBytes: pgtype.Int8{Int64: info.Size(), Valid: true},
-		// Checksum is empty - worker will compute it
+		SizeBytes: size,
 	})
 
 	if err != nil {
@@ -445,17 +451,6 @@ func (w *Watcher) createFileEvent(
 	}).Info("created file event")
 
 	return nil
-}
-
-// markDocumentDeleted hard-deletes a document and its chunks
-func (w *Watcher) markDocumentDeleted(ctx context.Context, id int64) error {
-	// Delete chunks first (redundant due to CASCADE, but explicit is safer)
-	if err := w.db.Queries.DeleteChunksByDocument(ctx, id); err != nil {
-		logrus.WithError(err).WithField("doc_id", id).Warn("failed to delete chunks")
-	}
-	// Delete the document (cascades to chunks via FK)
-	_, err := w.db.Queries.DeleteDocument(ctx, id)
-	return err
 }
 
 // listAllDocuments returns all documents indexed by path
@@ -487,6 +482,111 @@ func (w *Watcher) cleanupOldFileEvents(ctx context.Context) error {
 	return nil
 }
 
+func (w *Watcher) findWatchedAncestor(
+	ctx context.Context,
+	path string,
+) (sqlc.WatchDirectory, error) {
+	cur := filepath.Clean(path)
+	for {
+		dir, err := w.db.Queries.GetWatchDirectoryByPath(ctx, cur)
+		if err == nil {
+			return dir, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return sqlc.WatchDirectory{}, err
+		}
+
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return sqlc.WatchDirectory{}, pgx.ErrNoRows
+		}
+		cur = parent
+	}
+}
+
+func (w *Watcher) handleFileCreateOrModify(
+	ctx context.Context,
+	path string,
+	op string,
+	sizeBytes *int64,
+) error {
+	pd, err := w.findWatchedAncestor(ctx, path)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			logrus.WithField("path", path).Debug("file has no watched ancestor, ignoring")
+			return nil
+		}
+		return fmt.Errorf("failed to find watched ancestor: %w", err)
+	}
+
+	pat := "*"
+	if pd.Pattern.Valid && pd.Pattern.String != "" {
+		pat = pd.Pattern.String
+	}
+	if !matchGlob(filepath.Base(path), pat) {
+		logrus.WithFields(logrus.Fields{
+			"path":    path,
+			"pattern": pat,
+		}).Debug("file does not match watch pattern, ignoring")
+		return nil
+	}
+
+	return w.createFileEvent(ctx, path, op, sizeBytes)
+}
+
+func (w *Watcher) handleDirectoryDelete(ctx context.Context, dirPath string) error {
+	if err := w.removeWatchDirectoriesForDeletedPath(ctx, dirPath); err != nil {
+		return err
+	}
+
+	docs, err := w.db.Queries.ListDocumentsUnderPath(ctx, sqlc.ListDocumentsUnderPathParams{
+		Path:           dirPath,
+		SubtreePattern: subtreeLikePattern(dirPath),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list documents under deleted directory: %w", err)
+	}
+
+	for _, doc := range docs {
+		if err := w.createFileEvent(ctx, doc.Path, FSOpDelete, nil); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (w *Watcher) removeWatchDirectoriesForDeletedPath(ctx context.Context, dirPath string) error {
+	return w.db.WithTx(ctx, func(q *sqlc.Queries) error {
+		watchDirs, err := q.ListWatchDirectoriesUnderPath(ctx, sqlc.ListWatchDirectoriesUnderPathParams{
+			Path:           dirPath,
+			SubtreePattern: subtreeLikePattern(dirPath),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to list watch directories under deleted path: %w", err)
+		}
+
+		for _, watchDir := range watchDirs {
+			if _, err := q.DeleteWatchDirectory(ctx, watchDir.ID); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					continue
+				}
+				return fmt.Errorf("failed to delete watch directory %s: %w", watchDir.Path, err)
+			}
+		}
+
+		return nil
+	})
+}
+
+func sizeBytesFromInfo(info os.FileInfo) *int64 {
+	if info == nil || info.IsDir() {
+		return nil
+	}
+	size := info.Size()
+	return &size
+}
+
 // matchGlob performs simple glob matching
 func matchGlob(name, pattern string) bool {
 	// Very simple glob: only supports * at start, end, or both
@@ -503,11 +603,4 @@ func matchGlob(name, pattern string) bool {
 		return strings.HasPrefix(name, pattern[:len(pattern)-1])
 	}
 	return name == pattern
-}
-
-// IsRunning returns whether the watcher is running
-func (w *Watcher) IsRunning() bool {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.running
 }

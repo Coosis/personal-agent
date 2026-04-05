@@ -1,7 +1,7 @@
 """Database operations for the processor."""
 import logging
 from contextlib import contextmanager
-from typing import Any, Generator, List, Optional
+from typing import Any, Generator, List, Optional, cast
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -241,6 +241,7 @@ class DocumentDB:
                 return 0
             # Handle both dict and tuple results (dict_row factory vs default)
             if isinstance(result, dict):
+                result = cast(dict, result)
                 return int(result["id"])
             return int(result[0])
 

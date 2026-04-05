@@ -22,7 +22,7 @@ func NewHandler(service *Service) *Handler {
 // RegisterRoutes registers watcher routes
 func (h *Handler) RegisterRoutes(r *gin.RouterGroup) {
 	watch := r.Group("/watch")
-	
+
 	// Directories
 	dirs := watch.Group("/directories")
 	dirs.GET("", h.List)
@@ -84,8 +84,8 @@ func (h *Handler) Add(c *gin.Context) {
 	c.JSON(http.StatusCreated, dir)
 }
 
-// GET & PUT operations for a watch directory, relevent fields include 
-// pattern, recursive, enabled, priority
+// GET & PUT operations for a watch directory, relevant fields include
+// pattern, recursive, priority
 
 // Get GET /api/v1/watch/directories/:id
 func (h *Handler) Get(c *gin.Context) {
@@ -108,7 +108,6 @@ func (h *Handler) Get(c *gin.Context) {
 
 	c.JSON(http.StatusOK, dir)
 }
-
 
 // Update PUT /api/v1/watch/directories/:id
 func (h *Handler) Update(c *gin.Context) {
