@@ -63,10 +63,10 @@ A Personal Multimodal Knowledge Base & Task Assistant - an intelligent agent tha
 |-------|-----------|---------|
 | API | Go 1.25, Gin, logrus | HTTP server, file watcher, worker pool |
 | Agent | Python 3.13, LangGraph, LangChain | Chat agent with ReAct reasoning |
-| Processor | Python 3.13, APScheduler/Celery, Unstructured.io | Document parsing, chunking, embeddings |
+| Processor | Python 3.13, psycopg3, Unstructured.io | Document parsing, chunking, embeddings |
 | Database | PostgreSQL 15+, pgvector | Document metadata, chunks, vectors, conversations |
 | Codegen | sqlc | Type-safe SQL |
-| Embeddings | Alibaba DashScope (text-embedding-v3) | Vector embeddings for semantic search |
+| Embeddings | Alibaba DashScope (text-embedding-v4) | Vector embeddings for semantic search |
 | Chat LLM | OpenRouter (qwen-max/claude) | Conversation generation, reasoning |
 
 ---
@@ -142,10 +142,10 @@ On Add Watch Directory (runtime):
     └── Same logic as startup scan
 │
 Realtime (fsnotify):
-├── CREATE → create file_event
-├── WRITE → create file_event  
-├── REMOVE → soft delete document (set status='deleted')
-└── RENAME → treat as REMOVE + CREATE
+├── CREATE / WRITE → create file_event
+├── REMOVE file → create delete file_event
+├── REMOVE watched directory → remove matching watch rows + enqueue delete events for descendant documents
+└── RENAME → treat as delete/create depending on fsnotify stream
 ```
 
 ### 4.2 Metadata Storage
@@ -161,8 +161,8 @@ The `file_events` table stores:
 - `path`: File path
 - `event_type`: create/modify/delete
 - `size_bytes`: File size (from stat, fast)
-- `processed`: Boolean (processor marks true after handling)
-- `document_id`: Links to documents table after processing
+- `processed`: Boolean (worker marks true after handling)
+- `document_id`: Links to documents table for create/modify events; may be NULL for delete/audit rows
 
 ### 4.3 Startup Scan Algorithm
 
@@ -192,7 +192,7 @@ func (w *Watcher) startupScan(ctx context.Context) error {
     allDocs := db.GetAllDocuments()
     for _, doc := range allDocs {
         if _, err := os.Stat(doc.Path); os.IsNotExist(err) {
-            db.UpdateDocumentStatus(doc.ID, "deleted")
+            db.CreateFileEvent(doc.Path, "delete", nil)
         }
     }
 }
@@ -282,7 +282,9 @@ Documents Table → Python Processor → Chunks Table
 ### 5.4 Key Features
 
 - **Row-level locking**: Uses `FOR UPDATE SKIP LOCKED` to prevent multiple workers from processing the same event
+- **Per-path ordering**: Only the earliest unprocessed event for a given path is eligible at a time, preventing delete/create races
 - **Atomic transactions**: Document upsert and event marking happen in a single transaction
+- **Delete safety**: A delete event is treated as stale if the file already exists again when the worker handles it
 - **Idempotent processing**: Safe to retry - upsert handles duplicates, processed events are skipped
 - **Concurrent workers**: Multiple workers poll the database independently for higher throughput
 
@@ -353,11 +355,11 @@ The processor uses a lease mechanism for safe distributed processing:
 
 | Component | Purpose | Library |
 |-----------|---------|---------|
-| **Scheduler** | Poll DB for work | APScheduler / Celery |
+| **Scheduler** | Poll DB for work | In-process polling loop |
 | **Parser** | Extract text from files | Unstructured.io |
 | **Chunker** | Semantic chunking | LangChain TextSplitter |
 | **Embedder** | Generate vectors | Alibaba DashScope |
-| **DB Client** | Store results | psycopg3 / asyncpg |
+| **DB Client** | Store results | psycopg3 |
 
 ### 6.4 Document Processing States
 
@@ -553,26 +555,30 @@ personal-agent/
 │   │   ├── service.go
 │   │   └── models.go
 │   ├── watcher/                 # File watcher implementation
-│   │   ├── watcher.go           # fsnotify + startup scan
-│   │   ├── service.go           # Watch directory CRUD
+│   │   ├── watcher.go           # Watcher orchestration, startup scan, event routing
+│   │   ├── watcher_session.go   # fsnotify session + watched path set
+│   │   ├── path.go              # Path normalization helpers
+│   │   ├── service.go           # Watch directory CRUD + runtime sync
 │   │   ├── handler.go
 │   │   └── models.go
 │   ├── worker/                  # Background worker pool
-│   │   └── pool.go              # File event processor workers
+│   │   └── pool.go              # File event workers with per-path ordering
 │   └── server/
 │       └── server.go            # Gin server setup + route wiring
 ├── processor/                   # Python background processor
 │   ├── pyproject.toml           # Dependencies
-│   ├── requirements.txt         # Alternative deps file
 │   └── src/
 │       └── processor/
 │           ├── __init__.py
-│           ├── __main__.py      # Entry point
+│           ├── __main__.py      # Entry point / polling loop
 │           ├── config.py        # Settings
-│           ├── db.py            # Database operations
-│           ├── parsing.py       # Document text extraction
-│           ├── chunking.py      # Semantic chunking
-│           └── embedding.py     # Alibaba DashScope client
+│           ├── db.py            # Lease-based database operations
+│           ├── parsing/
+│           │   └── __init__.py  # Document text extraction
+│           ├── chunking/
+│           │   └── __init__.py  # Semantic chunking
+│           └── embedding/
+│               └── __init__.py  # Alibaba DashScope client
 ├── agent/                       # Python LangGraph agent
 │   ├── pyproject.toml
 │   └── src/
@@ -632,10 +638,6 @@ cd processor
 pip install -e .
 python -m processor
 
-# Or with requirements.txt
-cd processor
-pip install -r requirements.txt
-python -m processor
 ```
 
 ---
@@ -649,7 +651,7 @@ DATABASE_URL=postgres://postgres:postgres@localhost:5433/agentdb
 # Embedding Service (Alibaba DashScope)
 # Used only for: semantic chunking, vector indexing
 ALIBABA_API_KEY=sk-...
-ALIBABA_EMBEDDING_MODEL=text-embedding-v3
+ALIBABA_EMBEDDING_MODEL=text-embedding-v4
 
 # Chat LLM (OpenRouter)
 # Used only for: conversation, reasoning, agent actions
@@ -689,12 +691,12 @@ LANGSMITH_PROJECT=personal-agent
 | Logging | logrus | Structured logging with levels |
 | Primary Keys | BIGINT (not UUID) | Better insert performance for local use |
 | No migrations | DROP IF EXISTS in schema.sql | Quick rebuild during development |
-| Change Detection | DB metadata (mtime only in watcher) + async initial scan | Fast watcher, checksum computed by worker, existing files caught on add |
-| Processing Pipeline | Two-stage (Go metadata → Python content) | Watcher stays fast, heavy I/O in worker |
+| Change Detection | DB metadata (mtime only in watcher) + async initial scan + directory-delete propagation | Fast watcher, checksum computed by worker, existing files caught on add |
+| Processing Pipeline | Two-stage (Go metadata → Python content) | Watcher stays fast, heavy I/O in worker/processor |
 | Worker Pool | Go-based with row-level locking | Concurrent event processing with SKIP LOCKED |
-| Embedding Service | Alibaba DashScope (text-embedding-v3) | Dedicated for semantic search only |
+| Embedding Service | Alibaba DashScope (text-embedding-v4) | Dedicated for semantic search only |
 | Chat LLM | OpenRouter (qwen-max/claude) | Dedicated for conversation/reasoning only |
 
 ---
 
-*Last Updated: April 2, 2026*
+*Last Updated: April 5, 2026*

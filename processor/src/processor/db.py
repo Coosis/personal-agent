@@ -145,13 +145,15 @@ class DocumentDB:
 
     @staticmethod
     def release_lease(conn: psycopg.Connection, doc_id: int) -> None:
-        """Release the lease on a document (set to failed or for retry)."""
+        """Release the lease and return the document to the pending queue."""
         with conn.cursor() as cur:
             cur.execute(
                 """
                 UPDATE documents SET
+                    processing_status = 'pending',
                     lease_expires_at = NULL,
                     leased_by = NULL,
+                    error_message = NULL,
                     updated_at = NOW()
                 WHERE id = %s
                   AND processing_status = 'processing'
@@ -172,6 +174,7 @@ class DocumentDB:
                 UPDATE documents SET
                     processing_status = 'completed',
                     content_hash = %s,
+                    error_message = NULL,
                     lease_expires_at = NULL,
                     leased_by = NULL,
                     indexed_at = NOW(),

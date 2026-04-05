@@ -2,11 +2,7 @@
 import logging
 import mimetypes
 from pathlib import Path
-from typing import Optional
-
 from unstructured.partition.auto import partition
-from unstructured.partition.text import partition_text
-from unstructured.chunking.title import chunk_by_title
 
 logger = logging.getLogger(__name__)
 

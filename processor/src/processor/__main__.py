@@ -6,7 +6,6 @@ import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Optional
 
 from processor.config import get_settings
 from processor.db import (
