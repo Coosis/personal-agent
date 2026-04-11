@@ -7,27 +7,26 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/Coosis/personal-agent/internal/agenthttp"
+	"github.com/Coosis/personal-agent/internal/apiutil"
 	"github.com/Coosis/personal-agent/internal/db"
 	sqlc "github.com/Coosis/personal-agent/sqlc"
 )
 
-// Errors
 var (
-	ErrNotFound    = errors.New("conversation not found")
-	ErrMsgNotFound = errors.New("message not found")
+	ErrNotFound         = errors.New("conversation not found")
+	ErrAgentUnavailable = errors.New("agent unavailable")
 )
 
-// Service provides conversation business logic
 type Service struct {
-	db *db.DB
+	db    *db.DB
+	agent *agenthttp.Client
 }
 
-// NewService creates a new conversation service
-func NewService(database *db.DB) *Service {
-	return &Service{db: database}
+func NewService(database *db.DB, agent *agenthttp.Client) *Service {
+	return &Service{db: database, agent: agent}
 }
 
-// List retrieves conversations with pagination
 func (s *Service) List(ctx context.Context, req ListRequest) ([]Conversation, error) {
 	rows, err := s.db.Queries.ListConversations(ctx, sqlc.ListConversationsParams{
 		Limit:  req.Limit,
@@ -37,173 +36,152 @@ func (s *Service) List(ctx context.Context, req ListRequest) ([]Conversation, er
 		return nil, err
 	}
 
-	convs := make([]Conversation, len(rows))
-	for i, r := range rows {
-		convs[i] = fromSQLC(r)
+	items := make([]Conversation, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, toConversation(row))
 	}
-	return convs, nil
+	return items, nil
 }
 
-// Get retrieves a single conversation by ID with messages
-func (s *Service) Get(ctx context.Context, id int64) (*Conversation, []Message, error) {
+func (s *Service) Get(ctx context.Context, id int64) (*Conversation, error) {
 	row, err := s.db.Queries.GetConversationByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil, ErrNotFound
+			return nil, ErrNotFound
 		}
-		return nil, nil, err
+		return nil, err
 	}
 
-	conv := fromSQLC(row)
-
-	msgs, err := s.db.Queries.GetMessagesByConversation(ctx, sqlc.GetMessagesByConversationParams{
-		ConversationID: id,
-		Limit:          100,
-		Offset:         0,
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	messages := make([]Message, len(msgs))
-	for i, m := range msgs {
-		messages[i] = messageFromSQLC(m)
-	}
-
-	return &conv, messages, nil
+	item := toConversation(row)
+	return &item, nil
 }
 
-// Create creates a new conversation
 func (s *Service) Create(ctx context.Context, req CreateRequest) (*Conversation, error) {
 	row, err := s.db.Queries.CreateConversation(ctx, sqlc.CreateConversationParams{
-		Title:    pgtype.Text{String: req.Title, Valid: req.Title != ""},
-		Metadata: req.Metadata,
+		Title:    apiutil.Text(req.Title),
+		Summary:  pgtype.Text{},
+		Metadata: apiutil.DefaultJSONObject(),
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	conv := fromSQLC(row)
-	return &conv, nil
+	item := toConversation(row)
+	return &item, nil
 }
 
-// Update updates a conversation
-func (s *Service) Update(ctx context.Context, id int64, req UpdateRequest) (*Conversation, error) {
-	row, err := s.db.Queries.GetConversationByID(ctx, id)
-	if err != nil {
+func (s *Service) ListMessages(ctx context.Context, id int64, req ListMessagesRequest) ([]Message, error) {
+	if _, err := s.db.Queries.GetConversationByID(ctx, id); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
 
-	conv, err := s.db.Queries.UpdateConversation(ctx, sqlc.UpdateConversationParams{
-		ID:              id,
-		Title:           pgtype.Text{String: req.Title, Valid: req.Title != ""},
-		MessageCount:    row.MessageCount,
-		TokenUsageTotal: row.TokenUsageTotal,
-		Metadata:        req.Metadata,
+	rows, err := s.db.Queries.ListMessagesByConversation(ctx, sqlc.ListMessagesByConversationParams{
+		ConversationID: id,
+		Limit:          req.Limit,
+		Offset:         req.Offset,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	result := fromSQLC(conv)
-	return &result, nil
-}
-
-// Delete removes a conversation
-func (s *Service) Delete(ctx context.Context, id int64) error {
-	_, err := s.db.Queries.DeleteConversation(ctx, id)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
-		}
-		return err
+	items := make([]Message, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, toMessage(row))
 	}
-	return nil
+	return items, nil
 }
 
-// SendMessage adds a message to a conversation
-func (s *Service) SendMessage(ctx context.Context, convID int64, req SendMessageRequest) (*Message, error) {
-	// Check conversation exists
-	_, err := s.db.Queries.GetConversationByID(ctx, convID)
-	if err != nil {
+func (s *Service) SendMessage(ctx context.Context, conversationID int64, req SendMessageRequest) (*SendMessageResponse, error) {
+	if _, err := s.db.Queries.GetConversationByID(ctx, conversationID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
 
-	// Get next sequence number
-	seq, err := s.db.Queries.GetLatestMessageSequence(ctx, convID)
+	seq, err := s.db.Queries.GetLatestMessageSequence(ctx, conversationID)
 	if err != nil {
 		return nil, err
 	}
 
-	var seqNum int32
-	switch v := seq.(type) {
-	case int32:
-		seqNum = v + 1
-	case int64:
-		seqNum = int32(v) + 1
-	case float64:
-		seqNum = int32(v) + 1
-	default:
-		seqNum = 1
-	}
-
-	row, err := s.db.Queries.CreateMessage(ctx, sqlc.CreateMessageParams{
-		ConversationID: convID,
-		Role:           "user",
-		Content:        req.Content,
-		SequenceNumber: seqNum,
+	userRow, err := s.db.Queries.CreateMessage(ctx, sqlc.CreateMessageParams{
+		ConversationID:  conversationID,
+		Role:            "user",
+		Content:         req.Content,
+		Citations:       apiutil.DefaultJSONArray(),
+		ToolCalls:       apiutil.DefaultJSONArray(),
+		ToolResults:     apiutil.DefaultJSONArray(),
+		TokenCount:      pgtype.Int4{},
+		LatencyMs:       pgtype.Int4{},
+		Model:           pgtype.Text{},
+		ParentMessageID: pgtype.Int8{},
+		SequenceNumber:  seq + 1,
+		Metadata:        apiutil.DefaultJSONObject(),
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	msg := messageFromSQLC(row)
-	return &msg, nil
+	if s.agent == nil {
+		return nil, ErrAgentUnavailable
+	}
+
+	content, err := s.agent.Chat(ctx, req.Content)
+	if err != nil {
+		return nil, err
+	}
+
+	assistantRow, err := s.db.Queries.CreateMessage(ctx, sqlc.CreateMessageParams{
+		ConversationID:  conversationID,
+		Role:            "assistant",
+		Content:         content,
+		Citations:       apiutil.DefaultJSONArray(),
+		ToolCalls:       apiutil.DefaultJSONArray(),
+		ToolResults:     apiutil.DefaultJSONArray(),
+		TokenCount:      pgtype.Int4{},
+		LatencyMs:       pgtype.Int4{},
+		Model:           pgtype.Text{},
+		ParentMessageID: pgtype.Int8{Int64: userRow.ID, Valid: true},
+		SequenceNumber:  seq + 2,
+		Metadata:        apiutil.DefaultJSONObject(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &SendMessageResponse{
+		UserMessage:      toMessage(userRow),
+		AssistantMessage: toMessage(assistantRow),
+	}, nil
 }
 
-// fromSQLC converts sqlc Conversation to API Conversation
-func fromSQLC(c sqlc.Conversation) Conversation {
-	conv := Conversation{
-		ID:              c.ID,
-		MessageCount:    c.MessageCount.Int32,
-		TokenUsageTotal: c.TokenUsageTotal.Int32,
-		CreatedAt:       c.CreatedAt.Time,
-		UpdatedAt:       c.UpdatedAt.Time,
+func toConversation(row sqlc.Conversation) Conversation {
+	return Conversation{
+		ID:        row.ID,
+		Title:     apiutil.TextPtr(row.Title),
+		Summary:   apiutil.TextPtr(row.Summary),
+		Metadata:  row.Metadata,
+		CreatedAt: row.CreatedAt.Time,
+		UpdatedAt: row.UpdatedAt.Time,
 	}
-	if c.Title.Valid {
-		conv.Title = &c.Title.String
-	}
-	if c.Summary.Valid {
-		conv.Summary = &c.Summary.String
-	}
-	conv.SourceDocIDs = c.SourceDocumentIds
-	return conv
 }
 
-// messageFromSQLC converts sqlc Message to API Message
-func messageFromSQLC(m sqlc.Message) Message {
-	msg := Message{
-		ID:             m.ID,
-		ConversationID: m.ConversationID,
-		Role:           m.Role,
-		Content:        m.Content,
-		SequenceNumber: m.SequenceNumber,
-		CreatedAt:      m.CreatedAt.Time,
+func toMessage(row sqlc.Message) Message {
+	return Message{
+		ID:             row.ID,
+		ConversationID: row.ConversationID,
+		Role:           row.Role,
+		Content:        row.Content,
+		Citations:      row.Citations,
+		ToolCalls:      row.ToolCalls,
+		ToolResults:    row.ToolResults,
+		TokenCount:     apiutil.Int32Ptr(row.TokenCount),
+		LatencyMs:      apiutil.Int32Ptr(row.LatencyMs),
+		Model:          apiutil.TextPtr(row.Model),
+		SequenceNumber: row.SequenceNumber,
+		CreatedAt:      row.CreatedAt.Time,
 	}
-	if m.TokenCount.Valid {
-		msg.TokenCount = &m.TokenCount.Int32
-	}
-	if m.LatencyMs.Valid {
-		msg.LatencyMs = &m.LatencyMs.Int32
-	}
-	if m.Model.Valid {
-		msg.Model = &m.Model.String
-	}
-	return msg
 }

@@ -21,6 +21,10 @@ func main() {
 
 	config.SetupLogging(cfg.LogLevel)
 
+	if err := os.MkdirAll(cfg.StorageRoot, 0o755); err != nil {
+		logrus.WithError(err).Fatal("failed to create storage root")
+	}
+
 	database, err := db.New(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		logrus.WithError(err).Fatal("failed to connect database")

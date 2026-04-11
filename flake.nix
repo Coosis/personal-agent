@@ -39,10 +39,30 @@
           python310 = pkgs.python310;
           python311 = pkgs.python311;
           python312 = pkgs.python3;
-          python = pkgs.python313;
+          python = pkgs.python313.override {
+            packageOverrides =
+              py-final: py-prev: {
+                pgvector =
+                  if pkgs.stdenv.isDarwin then
+                    py-prev.pgvector.overridePythonAttrs (_: {
+                      # pgvector's nixpkgs test suite pulls postgresql-test-hook,
+                      # which is marked unsupported on Darwin.
+                      doCheck = false;
+                      nativeCheckInputs = [ ];
+                      checkInputs = [ ];
+                    })
+                  else
+                    py-prev.pgvector;
+              };
+          };
         in
         {
           default = pkgs.mkShell {
+            shellHook = ''
+              export PYTHONPATH="$PWD:$PWD/processor/src:$PWD/agent/src:$PWD/sqlc"
+              export DATABASE_URL="postgres://postgres:postgres@localhost:5433/agentdb"
+              export AGENT_URL="http://127.0.0.1:8090"
+              '';
             buildInputs = with pkgs; [
               (python.withPackages (
                 python-pkgs: with python-pkgs; [
@@ -54,14 +74,20 @@
                   numpy
                   psycopg
                   psycopg-pool
+                  flask
                   schedule
                   pydantic
                   pydantic-settings
                   httpx
                   unstructured
                   langchain
+                  langchain-core
+                  langchain-openai
                   langchain-text-splitters
+                  langgraph
                   python-magic
+                  pgvector
+                  sqlalchemy
                 ]
               ))
             ];

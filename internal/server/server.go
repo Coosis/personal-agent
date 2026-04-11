@@ -10,41 +10,32 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 
+	"github.com/Coosis/personal-agent/internal/agenthttp"
+	"github.com/Coosis/personal-agent/internal/agentruns"
 	"github.com/Coosis/personal-agent/internal/config"
 	"github.com/Coosis/personal-agent/internal/conversations"
 	"github.com/Coosis/personal-agent/internal/db"
 	"github.com/Coosis/personal-agent/internal/documents"
-	"github.com/Coosis/personal-agent/internal/watcher"
-	"github.com/Coosis/personal-agent/internal/worker"
+	"github.com/Coosis/personal-agent/internal/jobs"
+	"github.com/Coosis/personal-agent/internal/notes"
+	"github.com/Coosis/personal-agent/internal/search"
+	"github.com/Coosis/personal-agent/internal/sources"
+	"github.com/Coosis/personal-agent/internal/uploads"
 )
 
-// Errors
 var ErrShutdownTimeout = errors.New("server shutdown timeout")
 
-// Server holds HTTP server and dependencies
 type Server struct {
 	httpServer *http.Server
 	config     *config.Config
 	db         *db.DB
-	watcherSvc *watcher.Service
-	workerPool *worker.Pool
 }
 
-// New creates a new server, and tries to start the file watcher
 func New(cfg *config.Config, database *db.DB) (*Server, error) {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
 	router.Use(loggingMiddleware())
-
-	// Initialize watcher service
-	watcherSvc, err := watcher.NewService(database)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create watcher service: %w", err)
-	}
-
-	// Initialize worker pool
-	workerPool := worker.NewPool(database, cfg.WorkerPoolSize)
 
 	s := &Server{
 		httpServer: &http.Server{
@@ -53,94 +44,53 @@ func New(cfg *config.Config, database *db.DB) (*Server, error) {
 			ReadTimeout:  30 * time.Second,
 			WriteTimeout: 30 * time.Second,
 		},
-		config:     cfg,
-		db:         database,
-		watcherSvc: watcherSvc,
-		workerPool: workerPool,
+		config: cfg,
+		db:     database,
 	}
 
 	s.registerRoutes(router)
-
-	// Starts watcher on server startup
-	if err := s.watcherSvc.StartWatcher(context.Background()); err != nil {
-		logrus.WithError(err).Warn("failed to start file watcher on server startup")
-		return nil, err
-	}
-
 	return s, nil
 }
 
-// registerRoutes sets up all API routes
 func (s *Server) registerRoutes(r *gin.Engine) {
 	api := r.Group("/api/v1")
-
 	api.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	// Documents domain
-	docService := documents.NewService(s.db)
-	docHandler := documents.NewHandler(docService)
-	docHandler.RegisterRoutes(api)
+	notes.NewHandler(notes.NewService(s.db)).RegisterRoutes(api)
+	uploads.NewHandler(uploads.NewService(s.db, s.config.StorageRoot)).RegisterRoutes(api)
+	sources.NewHandler(sources.NewService(s.db)).RegisterRoutes(api)
+	documents.NewHandler(documents.NewService(s.db)).RegisterRoutes(api)
+	search.NewHandler(search.NewService(s.db)).RegisterRoutes(api)
+	jobs.NewHandler(jobs.NewService(s.db)).RegisterRoutes(api)
+	agentruns.NewHandler(agentruns.NewService(s.db)).RegisterRoutes(api)
 
-	// Conversations domain
-	convService := conversations.NewService(s.db)
-	convHandler := conversations.NewHandler(convService)
-	convHandler.RegisterRoutes(api)
-
-	// Watcher domain
-	watchHandler := watcher.NewHandler(s.watcherSvc)
-	watchHandler.RegisterRoutes(api)
+	convSvc := conversations.NewService(s.db, agenthttp.New(s.config.AgentURL))
+	conversations.NewHandler(convSvc).RegisterRoutes(api)
 }
 
-// Start runs the server, starts the worker pool and optionally starts the file watcher
-func (s *Server) Start(ctx context.Context) error {
-	// Start worker pool
-	s.workerPool.Start(ctx)
-
-	// Start file watcher if watch directories are configured
-	dirs, err := s.db.Queries.ListWatchDirectories(ctx)
-	if err != nil {
-		logrus.WithError(err).Warn("failed to list watch directories")
-	}
-
-	if len(dirs) > 0 {
-		if err := s.watcherSvc.StartWatcher(ctx); err != nil {
-			logrus.WithError(err).Warn("failed to start file watcher")
-		}
-	}
-
+func (s *Server) Start(context.Context) error {
 	logrus.WithField("addr", s.httpServer.Addr).Info("starting server")
-	err = s.httpServer.ListenAndServe()
+	err := s.httpServer.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err
 }
 
-// Shutdown gracefully stops the server
 func (s *Server) Shutdown(ctx context.Context) error {
 	logrus.Info("shutting down server")
-
-	// Stop worker pool first (finish current work)
-	s.workerPool.Stop()
-
-	// Stop file watcher
-	if err := s.watcherSvc.StopWatcher(); err != nil {
-		logrus.WithError(err).Warn("error stopping file watcher")
-	}
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	err := s.httpServer.Shutdown(shutdownCtx)
-	if err != nil {
+	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("%w: %v", ErrShutdownTimeout, err)
 	}
 	return nil
 }
 
-// loggingMiddleware logs requests with logrus
 func loggingMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()

@@ -6,3 +6,8 @@ sqlc/
 stubs/
 knowledge_base/
 __pycache__
+storage/
+difficulties.txt
+apictl
+server
+chat

@@ -1,7 +1,11 @@
 """Semantic chunking strategies."""
+
+from __future__ import annotations
+
+import hashlib
 import logging
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import Any, List, Optional
 
 from langchain_text_splitters import (
     MarkdownHeaderTextSplitter,
@@ -14,12 +18,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Chunk:
-    """A semantic chunk of a document."""
+    """Processor-side chunk object before DB insert."""
+
     content: str
     index: int
+    section_path: List[str] = field(default_factory=list)
+    semantic_type: Optional[str] = None
     token_count: Optional[int] = None
-    char_count: Optional[int] = None
-    heading_path: Optional[List[str]] = None
+    start_offset: Optional[int] = None
+    end_offset: Optional[int] = None
+    content_hash: Optional[str] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def chunk_document(content: str, extension: str, chunk_size: int = 512, chunk_overlap: int = 50) -> List[Chunk]:
@@ -41,16 +50,18 @@ def chunk_document(content: str, extension: str, chunk_size: int = 512, chunk_ov
     else:
         chunks = chunk_recursive(content, chunk_size, chunk_overlap)
     
-    # Filter out empty/whitespace-only chunks
-    filtered = [c for c in chunks if c.content and c.content.strip()]
-    
-    # Reindex after filtering
-    for i, chunk in enumerate(filtered):
-        chunk.index = i
-    
+    filtered: List[Chunk] = []
+    for chunk in chunks:
+        if not chunk.content or not chunk.content.strip():
+            continue
+        chunk.index = len(filtered)
+        chunk.token_count = approximate_token_count(chunk.content)
+        chunk.content_hash = hashlib.sha256(chunk.content.encode("utf-8")).hexdigest()
+        filtered.append(chunk)
+
     if len(filtered) < len(chunks):
-        logger.debug(f"Filtered {len(chunks) - len(filtered)} empty chunks")
-    
+        logger.debug("Filtered %s empty chunks", len(chunks) - len(filtered))
+
     return filtered
 
 
@@ -82,7 +93,7 @@ def chunk_markdown(content: str, chunk_size: int, chunk_overlap: int) -> List[Ch
     )
     
     chunks = []
-    for i, doc in enumerate(md_chunks):
+    for _, doc in enumerate(md_chunks):
         # Get header path from metadata
         heading_path = []
         if "Header 1" in doc.metadata:
@@ -95,19 +106,21 @@ def chunk_markdown(content: str, chunk_size: int, chunk_overlap: int) -> List[Ch
         # If chunk is too large, split it further
         if len(doc.page_content) > chunk_size * 1.5:
             sub_chunks = text_splitter.split_text(doc.page_content)
-            for j, sub_content in enumerate(sub_chunks):
+            for _, sub_content in enumerate(sub_chunks):
                 chunks.append(Chunk(
                     content=sub_content,
                     index=len(chunks),
-                    char_count=len(sub_content),
-                    heading_path=heading_path.copy(),
+                    section_path=heading_path.copy(),
+                    semantic_type="section",
+                    metadata={"char_count": len(sub_content)},
                 ))
         else:
             chunks.append(Chunk(
                 content=doc.page_content,
                 index=len(chunks),
-                char_count=len(doc.page_content),
-                heading_path=heading_path.copy(),
+                section_path=heading_path.copy(),
+                semantic_type="section",
+                metadata={"char_count": len(doc.page_content)},
             ))
     
     return chunks
@@ -146,7 +159,8 @@ def chunk_code(content: str, extension: str, chunk_size: int, chunk_overlap: int
         Chunk(
             content=text,
             index=i,
-            char_count=len(text),
+            semantic_type="code",
+            metadata={"char_count": len(text)},
         )
         for i, text in enumerate(texts)
     ]
@@ -166,7 +180,11 @@ def chunk_recursive(content: str, chunk_size: int, chunk_overlap: int) -> List[C
         Chunk(
             content=text,
             index=i,
-            char_count=len(text),
+            metadata={"char_count": len(text)},
         )
         for i, text in enumerate(texts)
     ]
+
+
+def approximate_token_count(text: str) -> int:
+    return len(text.split())

@@ -33,11 +33,11 @@ def extract_text(file_path: str) -> str:
 
         # Plain text files
         elif mime_type in ("text/plain", "text/markdown", "text/x-markdown"):
-            return path.read_text(encoding="utf-8")
+            return path.read_text(encoding="utf-8", errors="ignore")
 
         # Code files - read as text
         elif mime_type and mime_type.startswith("text/"):
-            return path.read_text(encoding="utf-8")
+            return path.read_text(encoding="utf-8", errors="ignore")
 
         # Try unstructured as fallback
         else:

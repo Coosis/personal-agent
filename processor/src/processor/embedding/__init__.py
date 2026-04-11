@@ -1,10 +1,12 @@
 """Embedding service using Alibaba DashScope."""
+
 import logging
 from typing import List
+
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from processor.config import get_settings
+from processor.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -15,11 +17,10 @@ class EmbeddingService:
     API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
 
     def __init__(self):
-        settings = get_settings()
-        self.api_key = settings.alibaba_api_key
-        # Use v4 by default for compatible-mode endpoint
-        self.model = settings.alibaba_embedding_model or "text-embedding-v4"
-        self.dimensions = settings.embedding_dimensions
+        cfg = get_config()
+        self.api_key = cfg.alibaba_api_key
+        self.model = cfg.alibaba_embedding_model
+        self.dimensions = cfg.embedding_dimensions
 
         if not self.api_key:
             raise ValueError("ALIBABA_API_KEY is required for embeddings")

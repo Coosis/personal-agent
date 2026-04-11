@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"strconv"
-	"strings"
 
 	"github.com/joho/godotenv"
 	"github.com/sirupsen/logrus"
@@ -16,6 +15,8 @@ const (
 	DefaultHost           = "0.0.0.0"
 	DefaultLogLevel       = "info"
 	DefaultDBURL          = "postgres://postgres:postgres@localhost:5433/agentdb"
+	DefaultAgentURL       = "http://127.0.0.1:8090"
+	DefaultStorageRoot    = "./storage"
 	DefaultScanInterval   = 3600
 	DefaultWorkerPoolSize = 4
 	DefaultEmbeddingModel = "text-embedding-v3"
@@ -34,12 +35,13 @@ type Config struct {
 	Host           string
 	LogLevel       string
 	DatabaseURL    string
+	AgentURL       string
 	AlibabaAPIKey  string
 	EmbeddingModel string
 	ChatModel      string
+	StorageRoot    string
 	ScanInterval   int
 	WorkerPoolSize int
-	WatchDirs      []string
 }
 
 // Load loads configuration from environment with const defaults
@@ -61,12 +63,13 @@ func Load() (*Config, error) {
 		Host:           getEnv("API_HOST", DefaultHost),
 		LogLevel:       getEnv("LOG_LEVEL", DefaultLogLevel),
 		DatabaseURL:    getEnv("DATABASE_URL", DefaultDBURL),
+		AgentURL:       getEnv("AGENT_URL", DefaultAgentURL),
 		AlibabaAPIKey:  os.Getenv("ALIBABA_API_KEY"),
 		EmbeddingModel: getEnv("ALIBABA_EMBEDDING_MODEL", DefaultEmbeddingModel),
 		ChatModel:      getEnv("ALIBABA_CHAT_MODEL", DefaultChatModel),
+		StorageRoot:    getEnv("STORAGE_ROOT", DefaultStorageRoot),
 		ScanInterval:   scanInterval,
 		WorkerPoolSize: workerPoolSize,
-		WatchDirs:      splitDirs(os.Getenv("WATCH_DIRS")),
 	}
 
 	return cfg, cfg.Validate()
@@ -76,6 +79,9 @@ func Load() (*Config, error) {
 func (c *Config) Validate() error {
 	if c.DatabaseURL == "" {
 		return ErrMissingDBURL
+	}
+	if c.AgentURL == "" {
+		return errors.New("AGENT_URL is required")
 	}
 	if c.AlibabaAPIKey == "" {
 		return ErrMissingAlibabaKey
@@ -98,18 +104,4 @@ func getEnv(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
-}
-
-func splitDirs(s string) []string {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	var result []string
-	for _, p := range parts {
-		if trimmed := strings.TrimSpace(p); trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
 }

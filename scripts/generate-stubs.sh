@@ -10,6 +10,9 @@ pyright --createstub psycopg
 pyright --createstub psycopg_pool
 pyright --createstub tenacity
 pyright --createstub httpx
+pyright --createstub flask
+pyright --createstub pgvector
+pyright --createstub sqlalchemy
 
 # Processing dependencies
 pyright --createstub unstructured
