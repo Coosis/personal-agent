@@ -196,6 +196,7 @@ CREATE TABLE messages (
     id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'tool')),
+    status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('streaming', 'completed', 'failed')),
     content TEXT NOT NULL,
     citations JSONB NOT NULL DEFAULT '[]'::jsonb,
     tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -207,10 +208,12 @@ CREATE TABLE messages (
     sequence_number INTEGER NOT NULL,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (conversation_id, sequence_number)
 );
 
 CREATE INDEX idx_messages_conversation_id ON messages(conversation_id, sequence_number);
+CREATE INDEX idx_messages_status ON messages(status);
 
 CREATE TABLE agent_runs (
     id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,

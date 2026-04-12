@@ -15,6 +15,7 @@ type Message struct {
 	ID             int64     `json:"id"`
 	ConversationID int64     `json:"conversation_id"`
 	Role           string    `json:"role"`
+	Status         string    `json:"status"`
 	Content        string    `json:"content"`
 	Citations      []byte    `json:"citations"`
 	ToolCalls      []byte    `json:"tool_calls"`
@@ -24,6 +25,7 @@ type Message struct {
 	Model          *string   `json:"model,omitempty"`
 	SequenceNumber int32     `json:"sequence_number"`
 	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type CreateRequest struct {

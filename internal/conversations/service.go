@@ -3,6 +3,8 @@ package conversations
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -21,6 +23,11 @@ var (
 type Service struct {
 	db    *db.DB
 	agent *agenthttp.Client
+}
+
+type preparedMessages struct {
+	user      sqlc.Message
+	assistant sqlc.Message
 }
 
 func NewService(database *db.DB, agent *agenthttp.Client) *Service {
@@ -95,6 +102,30 @@ func (s *Service) ListMessages(ctx context.Context, id int64, req ListMessagesRe
 }
 
 func (s *Service) SendMessage(ctx context.Context, conversationID int64, req SendMessageRequest) (*SendMessageResponse, error) {
+	// db stuff
+	prepared, err := s.prepareMessages(ctx, conversationID, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// streaming
+	assistantRow, err := s.runAssistantReplyStream(ctx, prepared.assistant, req.Content, nil)
+	response := &SendMessageResponse{
+		UserMessage:      toMessage(prepared.user),
+		AssistantMessage: toMessage(assistantRow),
+	}
+	if err != nil {
+		return response, err
+	}
+	return response, nil
+}
+
+// insert messages into db in single tx started within
+func (s *Service) prepareMessages(
+	ctx context.Context,
+	conversationID int64,
+	req SendMessageRequest,
+) (*preparedMessages, error) {
 	if _, err := s.db.Queries.GetConversationByID(ctx, conversationID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -102,61 +133,103 @@ func (s *Service) SendMessage(ctx context.Context, conversationID int64, req Sen
 		return nil, err
 	}
 
-	seq, err := s.db.Queries.GetLatestMessageSequence(ctx, conversationID)
-	if err != nil {
-		return nil, err
-	}
-
-	userRow, err := s.db.Queries.CreateMessage(ctx, sqlc.CreateMessageParams{
-		ConversationID:  conversationID,
-		Role:            "user",
-		Content:         req.Content,
-		Citations:       apiutil.DefaultJSONArray(),
-		ToolCalls:       apiutil.DefaultJSONArray(),
-		ToolResults:     apiutil.DefaultJSONArray(),
-		TokenCount:      pgtype.Int4{},
-		LatencyMs:       pgtype.Int4{},
-		Model:           pgtype.Text{},
-		ParentMessageID: pgtype.Int8{},
-		SequenceNumber:  seq + 1,
-		Metadata:        apiutil.DefaultJSONObject(),
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	if s.agent == nil {
 		return nil, ErrAgentUnavailable
 	}
 
-	content, err := s.agent.Chat(ctx, req.Content)
-	if err != nil {
-		return nil, err
-	}
+	var prepared preparedMessages
+	err := s.db.WithTx(ctx, func(q *sqlc.Queries) error {
+		seq, err := q.GetLatestMessageSequence(ctx, conversationID)
+		if err != nil {
+			return err
+		}
 
-	assistantRow, err := s.db.Queries.CreateMessage(ctx, sqlc.CreateMessageParams{
-		ConversationID:  conversationID,
-		Role:            "assistant",
-		Content:         content,
-		Citations:       apiutil.DefaultJSONArray(),
-		ToolCalls:       apiutil.DefaultJSONArray(),
-		ToolResults:     apiutil.DefaultJSONArray(),
-		TokenCount:      pgtype.Int4{},
-		LatencyMs:       pgtype.Int4{},
-		Model:           pgtype.Text{},
-		ParentMessageID: pgtype.Int8{Int64: userRow.ID, Valid: true},
-		SequenceNumber:  seq + 2,
-		Metadata:        apiutil.DefaultJSONObject(),
+		prepared.user, err = q.CreateMessage(ctx, sqlc.CreateMessageParams{
+			ConversationID:  conversationID,
+			Role:            "user",
+			Status:          "completed",
+			Content:         req.Content,
+			Citations:       apiutil.DefaultJSONArray(),
+			ToolCalls:       apiutil.DefaultJSONArray(),
+			ToolResults:     apiutil.DefaultJSONArray(),
+			TokenCount:      pgtype.Int4{},
+			LatencyMs:       pgtype.Int4{},
+			Model:           pgtype.Text{},
+			ParentMessageID: pgtype.Int8{},
+			SequenceNumber:  seq + 1,
+			Metadata:        apiutil.DefaultJSONObject(),
+		})
+		if err != nil {
+			return err
+		}
+
+		prepared.assistant, err = q.CreateMessage(ctx, sqlc.CreateMessageParams{
+			ConversationID:  conversationID,
+			Role:            "assistant",
+			Status:          "streaming",
+			Content:         "",
+			Citations:       apiutil.DefaultJSONArray(),
+			ToolCalls:       apiutil.DefaultJSONArray(),
+			ToolResults:     apiutil.DefaultJSONArray(),
+			TokenCount:      pgtype.Int4{},
+			LatencyMs:       pgtype.Int4{},
+			Model:           pgtype.Text{},
+			ParentMessageID: pgtype.Int8{Int64: prepared.user.ID, Valid: true},
+			SequenceNumber:  seq + 2,
+			Metadata:        apiutil.DefaultJSONObject(),
+		})
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	return &SendMessageResponse{
-		UserMessage:      toMessage(userRow),
-		AssistantMessage: toMessage(assistantRow),
-	}, nil
+	return &prepared, nil
 }
+
+func (s *Service) runAssistantReplyStream(
+	ctx context.Context,
+	assistant sqlc.Message,
+	content string,
+	onToken func(string) error,
+) (sqlc.Message, error) {
+	var builder strings.Builder
+
+	// streaming part
+	err := s.agent.ChatStream(ctx, content, func(token string) error {
+		builder.WriteString(token)
+		if onToken == nil {
+			return nil
+		}
+		return onToken(token)
+	})
+	// streaming finished, clean up phase
+
+	finalizeCtx := context.WithoutCancel(ctx)
+	if err != nil {
+		failed, updateErr := s.db.Queries.UpdateMessageContentAndStatus(finalizeCtx, sqlc.UpdateMessageContentAndStatusParams{
+			ID:      assistant.ID,
+			Content: builder.String(),
+			Status:  "failed",
+		})
+		if updateErr != nil {
+			return assistant, fmt.Errorf("agent stream failed: %w; additionally failed to mark message failed: %v", err, updateErr)
+		}
+		return failed, err
+	}
+
+	completed, err := s.db.Queries.UpdateMessageContentAndStatus(finalizeCtx, sqlc.UpdateMessageContentAndStatusParams{
+		ID:      assistant.ID,
+		Content: builder.String(),
+		Status:  "completed",
+	})
+	if err != nil {
+		return assistant, err
+	}
+	return completed, nil
+}
+
+// sqlc convenience functions
 
 func toConversation(row sqlc.Conversation) Conversation {
 	return Conversation{
@@ -174,6 +247,7 @@ func toMessage(row sqlc.Message) Message {
 		ID:             row.ID,
 		ConversationID: row.ConversationID,
 		Role:           row.Role,
+		Status:         row.Status,
 		Content:        row.Content,
 		Citations:      row.Citations,
 		ToolCalls:      row.ToolCalls,
@@ -183,5 +257,6 @@ func toMessage(row sqlc.Message) Message {
 		Model:          apiutil.TextPtr(row.Model),
 		SequenceNumber: row.SequenceNumber,
 		CreatedAt:      row.CreatedAt.Time,
+		UpdatedAt:      row.UpdatedAt.Time,
 	}
 }

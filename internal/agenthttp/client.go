@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	// "os"
 	"strings"
 	"time"
 )
@@ -20,12 +21,13 @@ type ChatRequest struct {
 	Content string `json:"content"`
 }
 
-type ChatResponse struct {
-	Content string `json:"content"`
-}
-
 type errorResponse struct {
 	Error string `json:"error"`
+}
+
+type streamChunk struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
 }
 
 func New(baseURL string) *Client {
@@ -58,20 +60,39 @@ func (c *Client) Health(ctx context.Context) error {
 }
 
 func (c *Client) Chat(ctx context.Context, content string) (string, error) {
+	var contentBuilder strings.Builder
+	err := c.ChatStream(ctx, content, func(token string) error {
+		contentBuilder.WriteString(token)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return contentBuilder.String(), nil
+}
+
+// repeatedly blocks and reads from stream, invoking onToken callback for each new token received until
+// stream ends or context is canceled. If onToken is nil, tokens will be discarded.
+func (c *Client) ChatStream(
+	ctx context.Context,
+	content string, // the message content to send to the agent
+	onToken func(string) error,
+) error {
 	body, err := json.Marshal(ChatRequest{Content: content})
 	if err != nil {
-		return "", fmt.Errorf("marshal chat request: %w", err)
+		return fmt.Errorf("marshal chat request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/chat", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/stream", bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("build chat request: %w", err)
+		return fmt.Errorf("build chat request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("call chat endpoint: %w", err)
+		return fmt.Errorf("call chat endpoint: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -79,15 +100,36 @@ func (c *Client) Chat(ctx context.Context, content string) (string, error) {
 		raw, _ := io.ReadAll(resp.Body)
 		var failure errorResponse
 		if err := json.Unmarshal(raw, &failure); err == nil && failure.Error != "" {
-			return "", fmt.Errorf("agent chat failed: %s", failure.Error)
+			return fmt.Errorf("agent chat failed: %s", failure.Error)
 		}
-		return "", fmt.Errorf("agent chat failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return fmt.Errorf("agent chat failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 
-	var out ChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("decode chat response: %w", err)
+	err = consumeSSE(resp.Body, func(event sseEvent) error {
+		if event.Data == "" {
+			return nil
+		}
+
+		var chunk streamChunk
+		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+			return fmt.Errorf("decode sse data: %w", err)
+		}
+
+		if chunk.Type != "token" {
+			return nil
+		}
+
+		// if _, err := os.Stdout.WriteString(chunk.Content); err != nil {
+		// 	return fmt.Errorf("write token to stdout: %w", err)
+		// }
+		if onToken == nil {
+			return nil
+		}
+		return onToken(chunk.Content)
+	})
+	if err != nil {
+		return fmt.Errorf("read chat stream: %w", err)
 	}
 
-	return out.Content, nil
+	return nil
 }

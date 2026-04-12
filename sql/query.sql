@@ -574,6 +574,7 @@ RETURNING *;
 INSERT INTO messages (
     conversation_id,
     role,
+    status,
     content,
     citations,
     tool_calls,
@@ -596,8 +597,17 @@ INSERT INTO messages (
     $9,
     $10,
     $11,
-    $12
+    $12,
+    $13
 ) RETURNING *;
+
+-- name: UpdateMessageContentAndStatus :one
+UPDATE messages
+SET content = @content,
+    status = @status,
+    updated_at = NOW()
+WHERE id = @id
+RETURNING *;
 
 -- name: ListMessagesByConversation :many
 SELECT *

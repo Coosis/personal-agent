@@ -25,6 +25,7 @@ func (h *Handler) RegisterRoutes(r *gin.RouterGroup) {
 	group.GET("/:id", h.Get)
 	group.POST("/:id/messages", h.SendMessage)
 	group.GET("/:id/messages", h.ListMessages)
+	group.POST("/:id/messages/stream", h.StreamMessage) // check stream.go
 }
 
 func (h *Handler) Create(c *gin.Context) {

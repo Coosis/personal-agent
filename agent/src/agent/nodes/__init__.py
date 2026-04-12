@@ -7,9 +7,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
 from agent.config import Config
+from agent.context import AppContext
 from agent.state import AgentState, AgentStateUpdate
+from agent.tools import create_tools
 
-def build_nodes(cfg: Config, get_personal_information, search_knowledge_base):
+def build_nodes(cfg: Config, appctx: AppContext):
     """Build node callables bound to runtime configuration."""
     model = ChatOpenAI(
         model=cfg.openrouter_model,
@@ -20,7 +22,7 @@ def build_nodes(cfg: Config, get_personal_information, search_knowledge_base):
         model=cfg.openrouter_model,
         api_key=lambda: cfg.openrouter_api_key,
         base_url=cfg.openrouter_api_url,
-    ).bind_tools([search_knowledge_base])
+    ).bind_tools(create_tools(appctx))
 
     summary_prompt = ChatPromptTemplate([
         ("system", "You are a personal assistant. Please analyze the user's question and provide a summary."),
@@ -30,7 +32,7 @@ def build_nodes(cfg: Config, get_personal_information, search_knowledge_base):
     def summarize_input(state: AgentState) -> AgentStateUpdate:
         msgs = summary_prompt.invoke({"question": state["user_input"]}).to_messages() + state["messages"]
         summarized_input = model.invoke(msgs)
-        print(f"Summarized input: {summarized_input}", file=sys.stderr)
+        # print(f"Summarized input: {summarized_input}", file=sys.stderr)
         return {"summarized_input": summarized_input}
 
     plan_system_prompt = """
@@ -49,7 +51,7 @@ If the answer needs personal information, use the available tool to retrieve add
             "question": state["user_input"],
         }).to_messages() + state["messages"]
         plan = tool_model.invoke(msgs)
-        print(f"Generated plan: {plan}", file=sys.stderr)
+        # print(f"Generated plan: {plan}", file=sys.stderr)
         return {"messages": [plan]}
 
     response_system_prompt = """
@@ -72,13 +74,13 @@ now you are going to answer the question based on the plan.
         final_answer = response_chain.invoke(msgs)
         return {"final_answer": final_answer}
 
-    force_tool_call_prompt = ChatPromptTemplate([
-        ("system", "You are a personal assistant. You have access to a tool called {tool_name}. "),
-        ("system", "Please call the tool with appropriate arguments to demonstrate that tool calls work"),
-    ])
+    # force_tool_call_prompt = ChatPromptTemplate([
+    #     ("system", "You are a personal assistant. You have access to a tool called {tool_name}. "),
+    #     ("system", "Please call the tool with appropriate arguments to demonstrate that tool calls work"),
+    # ])
+    #
+    # def force_tool_call(state: AgentState) -> AgentStateUpdate:
+    #     output = (force_tool_call_prompt | model).invoke({"tool_name": get_person})
+    #     return {"messages": [output]}
 
-    def force_tool_call(state: AgentState) -> AgentStateUpdate:
-        output = (force_tool_call_prompt | model).invoke({"tool_name": get_personal_information})
-        return {"messages": [output]}
-
-    return summarize_input, plan_response, generate_response, force_tool_call
+    return summarize_input, plan_response, generate_response

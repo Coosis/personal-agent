@@ -1,6 +1,6 @@
 """State definitions for the agent graph."""
 
-from typing import Any, TypedDict, Annotated, cast
+from typing import TypedDict, Annotated, cast
 from langchain_core.messages import AIMessage
 from langgraph.graph.message import add_messages, AnyMessage
 

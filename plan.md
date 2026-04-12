@@ -782,6 +782,7 @@ The agent should:
 | `GET` | `/api/v1/conversations` | List conversations |
 | `GET` | `/api/v1/conversations/{id}` | Get conversation |
 | `POST` | `/api/v1/conversations/{id}/messages` | Send message |
+| `POST` | `/api/v1/conversations/{id}/messages/stream` | Stream assistant reply while keeping the message row in `streaming` state until finalized |
 | `GET` | `/api/v1/conversations/{id}/messages` | List messages |
 
 ### 13.7 Jobs and Observability
@@ -962,6 +963,39 @@ Important behavior:
 - `dedupe_key` is unique only among pending jobs
 - repeated enqueue of the same pending logical effect should return the existing pending job
 
+#### `messages`
+
+Stores conversation history and assistant streaming lifecycle.
+
+Fields:
+
+- `id`
+- `conversation_id`
+- `role`
+- `status` (`streaming`, `completed`, `failed`)
+- `content`
+- `citations`
+- `tool_calls`
+- `tool_results`
+- `token_count`
+- `latency_ms`
+- `model`
+- `parent_message_id`
+- `sequence_number`
+- `metadata`
+- `created_at`
+- `updated_at`
+
+Assistant reply lifecycle:
+
+- insert the assistant row before calling the agent with `status = 'streaming'` and empty content
+- stream token events to the caller while accumulating the final reply in Go
+- for the streaming endpoint, emit explicit downstream lifecycle signals: `start`, `stop`, and `failed`
+- on success, update the same row to final content and `status = 'completed'`
+- on failure, update the same row to the accumulated partial content and `status = 'failed'`
+
+This keeps the database as the source of truth even when the HTTP client is observing streamed output.
+
 ---
 
 ## 15. Directory Structure
@@ -977,7 +1011,13 @@ personal-agent/
 │       └── main.go
 ├── internal/
 │   ├── agenthttp/
-│   │   └── client.go
+│   │   ├── client.go
+│   │   └── sse.go
+│   ├── conversations/
+│   │   ├── handler.go
+│   │   ├── models.go
+│   │   ├── service.go
+│   │   └── stream.go
 │   ├── agentruns/
 │   │   ├── handler.go
 │   │   ├── models.go

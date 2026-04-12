@@ -1,7 +1,7 @@
 """LangGraph assembly point."""
 
 from langgraph.constants import END, START
-from langgraph.graph.state import StateGraph
+from langgraph.graph.state import CompiledStateGraph, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from agent.config import Config
@@ -10,16 +10,14 @@ from agent.nodes import build_nodes
 from agent.state import AgentState, should_call_tool
 from agent.tools import create_tools
 
-
-def build_graph(cfg: Config, app_ctx: AppContext):
+def build_graph(cfg: Config, app_ctx: AppContext) -> CompiledStateGraph[AgentState, None, AgentState, AgentState]:
     """Build the agent graph with retrieval capabilities."""
     builder = StateGraph(AgentState)
 
     get_personal_information, search_knowledge_base = create_tools(app_ctx)
-    summarize_input, plan_response, generate_response, _ = build_nodes(
+    summarize_input, plan_response, generate_response = build_nodes(
         cfg,
-        get_personal_information,
-        search_knowledge_base,
+        app_ctx
     )
 
     builder.add_node("summarize_input", summarize_input)
