@@ -9,7 +9,8 @@ from agent.graph import build_graph
 from langgraph.graph.state import CompiledStateGraph
 
 from agent.context import AppContext
-from agent.state import AgentState
+from agent.nodes import GENERATE_RESPONSE_STREAM_KEY
+from agent.state import AgentState, pretty_print_state
 
 
 type CompiledGraph = CompiledStateGraph[AgentState, None, AgentState, AgentState]
@@ -18,31 +19,22 @@ def run_once(graph: CompiledGraph, content: str) -> Iterator[str]:
     """Run the graph once for a single user input."""
     # output = graph.invoke({"user_input": content})  # type: ignore[arg-type]
     for chunk in graph.stream(
-            {"user_input": content}, # type: ignore[arg-type]
+            {
+                "user_input": content,
+                "messages": [],
+                "conversation_messages": [],
+            }, # type: ignore[arg-type]
             version="v2",
-            stream_mode=["messages", "values"],
+            stream_mode=["custom", "values"],
             subgraphs=True,
             ):
-        if chunk["type"] == "messages":
-            msg, metadata = chunk["data"]
-            if msg.content is not None:
-                if isinstance(msg.content, str) and msg.content.strip() != "":
-                    print(msg.content, end="", flush=True)
-                    yield msg.content
-                elif isinstance(msg.content, list):
-                    for part in msg.content:
-                        if isinstance(part, str) and part.strip() != "":
-                            print(part, end="", flush=True)
-                            yield part
-            elif msg.chunk_position == "last":
-                print("\n\n")
-                yield "\n\n"
+        if chunk["type"] == "custom":
+            yield chunk["data"][GENERATE_RESPONSE_STREAM_KEY]
 
         elif chunk["type"] == "values":
-            print(f"\n\nFinal answer: {chunk['data']}\n\n")
-            # print(f"Metadata: {metadata}\n\n\n\n")
-    # return output["final_answer"]
-    # return "ok!"
+            pass
+            # print("\n\nCurrent state:")
+            # print(f"{json.dumps(pretty_print_state(chunk["data"]), indent=2)}")
 
 
 def create_app(cfg, app_ctx: AppContext) -> Flask:
@@ -53,25 +45,6 @@ def create_app(cfg, app_ctx: AppContext) -> Flask:
     @app.get("/health")
     def health():
         return jsonify({"status": "ok"})
-
-
-    # non-streaming response
-    @app.post("/v1/chat")
-    def chat():
-        payload = request.get_json(silent=True)
-        if not isinstance(payload, dict):
-            return jsonify({"error": "request body must be a JSON object"}), 400
-
-        content = payload.get("content")
-        if not isinstance(content, str) or not content.strip():
-            return jsonify({"error": "content must be a non-empty string"}), 400
-
-        try:
-            output = run_once(graph, content)
-            return jsonify({"content": output})
-        except Exception as exc:
-            app.logger.exception("request failed")
-            return jsonify({"error": str(exc)}), 500
 
     # streaming response using sse
     def sse_event(data: dict, event = None) -> str:

@@ -14,22 +14,24 @@ def build_graph(cfg: Config, app_ctx: AppContext) -> CompiledStateGraph[AgentSta
     """Build the agent graph with retrieval capabilities."""
     builder = StateGraph(AgentState)
 
-    get_personal_information, search_knowledge_base = create_tools(app_ctx)
-    summarize_input, plan_response, generate_response = build_nodes(
-        cfg,
-        app_ctx
-    )
+    tools = create_tools(app_ctx)
+    nodes = build_nodes(cfg, tools)
 
-    builder.add_node("summarize_input", summarize_input)
-    builder.add_node("plan_response", plan_response)
-    builder.add_node("generate_response", generate_response)
+    builder.add_node("analyze_request", nodes["analyze_request"])
+    builder.add_node("plan_response", nodes["plan_response"])
+    builder.add_node("generate_response", nodes["generate_response"])
+    builder.add_node("commit_agent_response", nodes["commit_agent_response"])
+    builder.add_node("normalize_tool_result", nodes["normalize_tool_result"])
 
-    builder.add_node("tool", ToolNode([get_personal_information, search_knowledge_base]))
+    builder.add_node("tool", ToolNode(tools))
 
-    builder.add_edge(START, "summarize_input")
-    builder.add_edge("summarize_input", "plan_response")
+    builder.add_edge(START, "analyze_request")
+    builder.add_edge("analyze_request", "plan_response")
     builder.add_conditional_edges("plan_response", should_call_tool, {True: "tool", False: "generate_response"})
-    builder.add_edge("tool", "plan_response")
-    builder.add_edge("generate_response", END)
+    builder.add_edge("tool", "normalize_tool_result")
+    builder.add_edge("normalize_tool_result", "generate_response")
+
+    builder.add_edge("generate_response", "commit_agent_response")
+    builder.add_edge("commit_agent_response", END)
 
     return builder.compile()

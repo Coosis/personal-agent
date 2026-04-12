@@ -62,6 +62,8 @@
               export PYTHONPATH="$PWD:$PWD/processor/src:$PWD/agent/src:$PWD/sqlc"
               export DATABASE_URL="postgres://postgres:postgres@localhost:5433/agentdb"
               export AGENT_URL="http://127.0.0.1:8090"
+              export LANGSMITH_TRACING=true
+              export LANGSMITH_ENDPOINT=https://api.smith.langchain.com
               '';
             buildInputs = with pkgs; [
               (python.withPackages (

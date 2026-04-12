@@ -54,8 +54,8 @@ func (s *Service) search(ctx context.Context, req SearchRequest) ([]SearchResult
 
 	lexicalRows, err := s.db.Queries.SearchLexicalChunks(ctx, sqlc.SearchLexicalChunksParams{
 		WebsearchToTsquery: req.Query,
-		Limit:   limit,
-		Offset:  req.Offset,
+		Limit:              limit,
+		Offset:             req.Offset,
 	})
 	if err != nil {
 		return nil, nil, nil, err
@@ -73,8 +73,8 @@ func (s *Service) search(ctx context.Context, req SearchRequest) ([]SearchResult
 	if len(req.Embedding) > 0 {
 		vectorRows, err := s.db.Queries.SearchVectorChunks(ctx, sqlc.SearchVectorChunksParams{
 			Embedding: pgvector.NewVector(req.Embedding),
-			Limit:   limit,
-			Offset:  req.Offset,
+			Limit:     limit,
+			Offset:    req.Offset,
 		})
 		if err != nil {
 			return nil, nil, nil, err
