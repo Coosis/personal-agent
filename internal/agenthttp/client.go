@@ -18,6 +18,12 @@ type Client struct {
 }
 
 type ChatRequest struct {
+	Content  string        `json:"content"`
+	Messages []ChatMessage `json:"messages,omitempty"`
+}
+
+type ChatMessage struct {
+	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
@@ -59,9 +65,9 @@ func (c *Client) Health(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) Chat(ctx context.Context, content string) (string, error) {
+func (c *Client) Chat(ctx context.Context, content string, messages []ChatMessage) (string, error) {
 	var contentBuilder strings.Builder
-	err := c.ChatStream(ctx, content, func(token string) error {
+	err := c.ChatStream(ctx, content, messages, func(token string) error {
 		contentBuilder.WriteString(token)
 		return nil
 	})
@@ -76,9 +82,13 @@ func (c *Client) Chat(ctx context.Context, content string) (string, error) {
 func (c *Client) ChatStream(
 	ctx context.Context,
 	content string, // the message content to send to the agent
+	messages []ChatMessage,
 	onToken func(string) error,
 ) error {
-	body, err := json.Marshal(ChatRequest{Content: content})
+	body, err := json.Marshal(ChatRequest{
+		Content:  content,
+		Messages: messages,
+	})
 	if err != nil {
 		return fmt.Errorf("marshal chat request: %w", err)
 	}

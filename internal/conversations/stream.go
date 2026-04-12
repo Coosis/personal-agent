@@ -125,6 +125,7 @@ func (h *Handler) StreamMessage(c *gin.Context) {
 			c.Request.Context(),
 			prepared.assistant,
 			req.Content,
+			prepared.history,
 			func(token string) error {
 				select {
 				case tokenCh <- token:

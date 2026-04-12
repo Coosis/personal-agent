@@ -28,6 +28,7 @@ type Service struct {
 type preparedMessages struct {
 	user      sqlc.Message
 	assistant sqlc.Message
+	history   []agenthttp.ChatMessage
 }
 
 func NewService(database *db.DB, agent *agenthttp.Client) *Service {
@@ -109,7 +110,7 @@ func (s *Service) SendMessage(ctx context.Context, conversationID int64, req Sen
 	}
 
 	// streaming
-	assistantRow, err := s.runAssistantReplyStream(ctx, prepared.assistant, req.Content, nil)
+	assistantRow, err := s.runAssistantReplyStream(ctx, prepared.assistant, req.Content, prepared.history, nil)
 	response := &SendMessageResponse{
 		UserMessage:      toMessage(prepared.user),
 		AssistantMessage: toMessage(assistantRow),
@@ -139,6 +140,12 @@ func (s *Service) prepareMessages(
 
 	var prepared preparedMessages
 	err := s.db.WithTx(ctx, func(q *sqlc.Queries) error {
+		historyRows, err := q.ListCompletedMessagesByConversation(ctx, conversationID)
+		if err != nil {
+			return err
+		}
+		prepared.history = buildAgentConversationHistory(historyRows)
+
 		seq, err := q.GetLatestMessageSequence(ctx, conversationID)
 		if err != nil {
 			return err
@@ -191,12 +198,13 @@ func (s *Service) runAssistantReplyStream(
 	ctx context.Context,
 	assistant sqlc.Message,
 	content string,
+	history []agenthttp.ChatMessage,
 	onToken func(string) error,
 ) (sqlc.Message, error) {
 	var builder strings.Builder
 
 	// streaming part
-	err := s.agent.ChatStream(ctx, content, func(token string) error {
+	err := s.agent.ChatStream(ctx, content, history, func(token string) error {
 		builder.WriteString(token)
 		if onToken == nil {
 			return nil
@@ -227,6 +235,20 @@ func (s *Service) runAssistantReplyStream(
 		return assistant, err
 	}
 	return completed, nil
+}
+
+func buildAgentConversationHistory(rows []sqlc.Message) []agenthttp.ChatMessage {
+	history := make([]agenthttp.ChatMessage, 0, len(rows))
+	for _, row := range rows {
+		if row.Role != "user" && row.Role != "assistant" && row.Role != "system" && row.Role != "tool" {
+			continue
+		}
+		history = append(history, agenthttp.ChatMessage{
+			Role:    row.Role,
+			Content: row.Content,
+		})
+	}
+	return history
 }
 
 // sqlc convenience functions

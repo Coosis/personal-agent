@@ -702,13 +702,16 @@ Primary tasks:
 
 ### 12.2 Agent Tools
 
-- `search_knowledge`
-- `get_document`
-- `list_documents`
-- `list_sources`
-- `summarize_document`
-- `compare_documents`
-- `extract_actions`
+- Current v1 tools in the repo:
+  - `get_personal_information`
+  - `search_knowledge_base`
+- Reserved/planned tools:
+  - `get_document`
+  - `list_documents`
+  - `list_sources`
+  - `summarize_document`
+  - `compare_documents`
+  - `extract_actions`
 
 ### 12.3 Grounding Rules
 
@@ -718,6 +721,34 @@ The agent should:
 - show uncertainty when evidence is weak
 - cite sources used in the answer
 - expose tool calls/results via agent run traces
+
+### 12.4 Current Graph Shape
+
+Current implemented graph direction:
+
+1. `analyze_request`
+2. `plan_response`
+3. optional tool loop
+4. `normalize_tool_result`
+5. `generate_response`
+6. `commit_agent_response`
+
+Current state split:
+
+- `conversation_messages`: user-visible prior turns
+- `messages`: internal tool-loop scratchpad used by LangGraph tool routing
+- `input_analysis`
+- `plan_decision`
+- `retrieved_context`
+- `final_answer`
+
+### 12.5 Important Remaining Gaps
+
+- Go currently sends only the current user message to the Python agent; prior conversation history is stored in the database but not yet replayed into the agent state
+- `retrieved_context` normalization is still simple and should evolve into explicit evidence blocks with citations
+- personal information is still stubbed in code and should be moved to database-backed retrieval
+- compare/summarize/extract workflows are still planned, not implemented
+- LangSmith tracing is useful for debugging, but the project should not depend on trace-only metadata for runtime behavior
 
 ---
 
@@ -1004,7 +1035,17 @@ This keeps the database as the source of truth even when the HTTP client is obse
 personal-agent/
 ├── cmd/
 │   ├── apictl/
-│   │   └── main.go
+│   │   ├── cli.go
+│   │   ├── conversations.go
+│   │   ├── documents.go
+│   │   ├── health.go
+│   │   ├── http.go
+│   │   ├── jobs.go
+│   │   ├── main.go
+│   │   ├── notes.go
+│   │   ├── search.go
+│   │   ├── sources.go
+│   │   └── uploads.go
 │   ├── chat/
 │   │   └── main.go
 │   └── server/
@@ -1052,11 +1093,9 @@ personal-agent/
 │   │   ├── handler.go
 │   │   ├── models.go
 │   │   └── service.go
+│   ├── sseutil/
+│   │   └── sseutil.go
 │   ├── search/
-│   │   ├── handler.go
-│   │   ├── models.go
-│   │   └── service.go
-│   ├── conversations/
 │   │   ├── handler.go
 │   │   ├── models.go
 │   │   └── service.go
@@ -1067,8 +1106,14 @@ personal-agent/
 │   └── src/
 │       └── processor/
 │           ├── __main__.py
+│           ├── document.py
+│           ├── heartbeat.py
+│           ├── runtime.py
+│           ├── reindex.py
+│           ├── scan.py
 │           ├── config.py
 │           ├── db.py
+│           ├── metadata.py
 │           ├── parsing/
 │           ├── chunking/
 │           └── embedding/
@@ -1076,10 +1121,17 @@ personal-agent/
 │   ├── pyproject.toml
 │   └── src/
 │       └── agent/
-│           ├── runtime.py
-│           ├── tools.py
-│           ├── retrieval.py
-│           └── prompts.py
+│           ├── __main__.py
+│           ├── config.py
+│           ├── context.py
+│           ├── db.py
+│           ├── embedding.py
+│           ├── graph.py
+│           ├── nodes/
+│           ├── retrieval/
+│           ├── prompts.py
+│           ├── state.py
+│           └── tools/
 ├── storage/
 │   └── uploads/
 │       └── <upload-id>/
@@ -1160,6 +1212,9 @@ Deliverables:
 - conversation API
 - tool-based retrieval
 - grounded answering
+- streamed final-answer generation
+- conversation history replay into agent state
+- database-backed personal/profile retrieval
 - summarization and compare workflows
 
 ### Phase 6 - Observability and Lifecycle
@@ -1266,7 +1321,7 @@ LANGSMITH_PROJECT=personal-agent
 
 Suggested framing for resume/interview use:
 
-Built a local-first personal knowledge base agent that ingests notes, files, and directories through explicit indexing jobs, normalizes heterogeneous content into a structured searchable corpus, and supports citation-grounded hybrid retrieval for agentic workflows. Designed a scan-based reconciliation pipeline instead of OS-specific file watching, improving portability, recovery, and indexing correctness.
+Built a local-first personal knowledge base agent that ingests notes, files, uploads, and directories through explicit indexing jobs, normalizes heterogeneous content into a searchable corpus, and serves citation-grounded retrieval and streaming assistant responses over a Go API. Designed safe reindexing via chunk-build switching, database-backed job orchestration, and scan-based reconciliation instead of OS-specific file watching, improving portability, recovery, and correctness.
 
 ---
 

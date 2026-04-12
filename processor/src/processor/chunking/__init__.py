@@ -31,7 +31,13 @@ class Chunk:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-def chunk_document(content: str, extension: str, chunk_size: int = 512, chunk_overlap: int = 50) -> List[Chunk]:
+def chunk_document(
+        title: str,
+        content: str,
+        extension: str,
+        chunk_size: int = 512,
+        chunk_overlap: int = 50,
+        ) -> List[Chunk]:
     """Chunk a document based on its type."""
     
     # Skip empty content
@@ -51,9 +57,12 @@ def chunk_document(content: str, extension: str, chunk_size: int = 512, chunk_ov
         chunks = chunk_recursive(content, chunk_size, chunk_overlap)
     
     filtered: List[Chunk] = []
+    title_prefix = format_title_prefix(title)
     for chunk in chunks:
         if not chunk.content or not chunk.content.strip():
             continue
+        if title_prefix:
+            chunk.content = f"{title_prefix}\n\n{chunk.content}"
         chunk.index = len(filtered)
         chunk.token_count = approximate_token_count(chunk.content)
         chunk.content_hash = hashlib.sha256(chunk.content.encode("utf-8")).hexdigest()
@@ -188,3 +197,10 @@ def chunk_recursive(content: str, chunk_size: int, chunk_overlap: int) -> List[C
 
 def approximate_token_count(text: str) -> int:
     return len(text.split())
+
+
+def format_title_prefix(title: str) -> str:
+    clean = title.strip()
+    if not clean:
+        return ""
+    return f"-- document title: {clean} --"

@@ -19,10 +19,9 @@ def build_graph(cfg: Config, app_ctx: AppContext) -> CompiledStateGraph[AgentSta
 
     builder.add_node("analyze_request", nodes["analyze_request"])
     builder.add_node("plan_response", nodes["plan_response"])
+    builder.add_node("normalize_tool_result", nodes["normalize_tool_result"])
     builder.add_node("generate_response", nodes["generate_response"])
     builder.add_node("commit_agent_response", nodes["commit_agent_response"])
-    builder.add_node("normalize_tool_result", nodes["normalize_tool_result"])
-
     builder.add_node("tool", ToolNode(tools))
 
     builder.add_edge(START, "analyze_request")

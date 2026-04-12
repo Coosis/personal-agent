@@ -616,6 +616,13 @@ WHERE conversation_id = $1
 ORDER BY sequence_number
 LIMIT $2 OFFSET $3;
 
+-- name: ListCompletedMessagesByConversation :many
+SELECT *
+FROM messages
+WHERE conversation_id = $1
+  AND status = 'completed'
+ORDER BY sequence_number;
+
 -- name: GetLatestMessageSequence :one
 SELECT COALESCE(MAX(sequence_number), 0)::int4
 FROM messages

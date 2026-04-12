@@ -19,9 +19,23 @@ def format_search_results(results) -> str:
             f"Document: {result.document_title}\n"
             f"Source: {source_ref}\n"
             f"Content: {result.content}\n"
-            f"Similarity: {result.vector_score:.2f}\n"
+            f"Lexical score: {result.lexical_score:.2f}\n"
+            f"Vector score: {result.vector_score:.2f}\n"
+            f"Combined score: {result.combined_score:.2f}\n"
         )
     return "\n".join(formatted_results)
+
+
+def search_knowledge_base_text(app_ctx: AppContext, query: str) -> str:
+    """Search the knowledge base and return formatted text."""
+    try:
+        query_vector = app_ctx.embd_svc.embed(query)
+        results = app_ctx.db.search_similar_chunks(query, query_vector)
+        if not results:
+            return "No relevant information found."
+        return format_search_results(results)
+    except Exception as exc:
+        return f"Error searching knowledge base: {str(exc)}"
 
 
 def create_search_knowledge_base_tool(app_ctx: AppContext):
@@ -30,13 +44,6 @@ def create_search_knowledge_base_tool(app_ctx: AppContext):
     @tool
     def search_knowledge_base(query: str) -> str:
         """Search the knowledge base for relevant information."""
-        try:
-            query_vector = app_ctx.embd_svc.embed(query)
-            results = app_ctx.db.search_similar_chunks(query_vector, limit=5)
-            if not results:
-                return "No relevant information found."
-            return format_search_results(results)
-        except Exception as exc:
-            return f"Error searching knowledge base: {str(exc)}"
+        return search_knowledge_base_text(app_ctx, query)
 
     return search_knowledge_base

@@ -248,7 +248,7 @@ def enqueue_reindex_document(reindex_job_type: str, conn, document_id: int, sour
     q.create_job(
         CreateJobParams(
             type=reindex_job_type,
-            payload=payload,
+            payload=Jsonb(payload),
             dedupe_key=f"{reindex_job_type}:{document_id}",
             status="pending",
             available_at=datetime.now(UTC),

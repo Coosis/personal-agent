@@ -33,6 +33,7 @@ def process_reindex_document(
     heartbeat.ensure_active()
 
     chunks = chunk_document(
+        loaded.title,
         loaded.content,
         loaded.extension,
         chunk_size=cfg.chunk_size,

@@ -1,8 +1,10 @@
 """Node package for the agent graph."""
 
-from typing import Annotated
+from __future__ import annotations
+
+from typing import Annotated, Literal, TypedDict
+
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
 from langgraph.config import get_stream_writer
 
@@ -12,9 +14,20 @@ from agent.state import AgentState, AgentStateUpdate
 
 GENERATE_RESPONSE_STREAM_KEY = "generate_response_msg"
 
+
+class AnalysisResult(TypedDict):
+    intent: str
+    question_type: Literal["knowledge", "chit_chat", "reasoning", "unknown"]
+    knowledge_scope: Literal["personal", "project", "document", "general", "none", "unknown"]
+    needs_retrieval: bool
+    retrieval_query: str
+    missing_information: str
+
+
 def take_recent_history(messages: Annotated[list, "conversation_messages"]) -> list:
     """Take the most recent messages from the conversation history."""
     return messages[-4:] if messages else []
+
 
 def build_nodes(cfg: Config, tools) -> dict:
     """Build node callables bound to runtime configuration."""
@@ -23,6 +36,7 @@ def build_nodes(cfg: Config, tools) -> dict:
         api_key=lambda: cfg.openrouter_api_key,
         base_url=cfg.openrouter_api_url,
     )
+    analysis_model = model.with_structured_output(AnalysisResult)
     tool_model = ChatOpenAI(
         model=cfg.openrouter_model,
         api_key=lambda: cfg.openrouter_api_key,
@@ -38,26 +52,34 @@ def build_nodes(cfg: Config, tools) -> dict:
             "question": state["user_input"],
         }).to_messages()
         msgs = msgs[:1] + take_recent_history(state["conversation_messages"]) + msgs[1:]
-        analysis = (model | StrOutputParser()).invoke(msgs)
+        analysis = analysis_model.invoke(msgs)
 
-        return {"input_analysis": analysis}
+        return {
+            "intent": analysis["intent"],
+            "question_type": analysis["question_type"],
+            "knowledge_scope": analysis["knowledge_scope"],
+            "needs_retrieval": analysis["needs_retrieval"],
+            "retrieval_query": analysis["retrieval_query"],
+            "missing_information": analysis["missing_information"],
+        }
 
     def plan_response(state: AgentState) -> AgentStateUpdate:
         msgs = plan_prompt.invoke({
             "question": state["user_input"],
-            "input_analysis": state["input_analysis"],
+            "intent": state.get("intent", "unknown"),
+            "question_type": state.get("question_type", "unknown"),
+            "knowledge_scope": state.get("knowledge_scope", "unknown"),
+            "needs_retrieval": "true" if state.get("needs_retrieval", False) else "false",
+            "retrieval_query": state.get("retrieval_query", state["user_input"]),
+            "missing_information": state.get("missing_information", "unknown"),
         }).to_messages()
         msgs = msgs[:1] + take_recent_history(state["conversation_messages"]) + msgs[1:]
         plan = tool_model.invoke(msgs)
-        content = ""
-        if isinstance(plan.content, str):
-            content = plan.content
-        elif isinstance(plan.content, list):
-            content = "\n".join([msg for msg in plan.content if isinstance(msg, str)])
 
-        return {"plan_decision": content, "messages": [plan]}
+        return {"messages": [plan]}
 
     def normalize_tool_result(state: AgentState) -> AgentStateUpdate:
+        contents = []
         for message in state["messages"]:
             if isinstance(message, ToolMessage):
                 content = ""
@@ -65,38 +87,35 @@ def build_nodes(cfg: Config, tools) -> dict:
                     content = message.content
                 elif isinstance(message.content, list):
                     content = "\n".join([msg for msg in message.content if isinstance(msg, str)])
-        return {"retrieved_context": content}
+                if content.strip():
+                    contents.append(content)
+        return {"retrieved_context": "\n".join(contents) if contents else "No relevant information retrieved from tools."}
 
     def generate_response(state: AgentState) -> AgentStateUpdate:
-        response_chain = model
         msgs = response_prompt.invoke({
             "question": state["user_input"],
-            "input_analysis": state["input_analysis"],
-            "plan_decision": state["plan_decision"],
+            "intent": state.get("intent", "unknown"),
+            "question_type": state.get("question_type", "unknown"),
+            "knowledge_scope": state.get("knowledge_scope", "unknown"),
+            "missing_information": state.get("missing_information", "unknown"),
             "retrieved_context": state.get("retrieved_context", "No relevant information retrieved from tools."),
         }).to_messages()
 
         writer = get_stream_writer()
-
         msgs = msgs[:1] + take_recent_history(state["conversation_messages"]) + msgs[1:]
 
         final_answer = ""
-        for chunk in response_chain.stream(msgs):
-            msg = chunk
-            if msg.content is None:
+        for chunk in model.stream(msgs):
+            if chunk.content is None:
                 continue
-            if isinstance(msg.content, str) and msg.content.strip() != "":
-                # print(msg.content, end="", flush=True)
-                writer({GENERATE_RESPONSE_STREAM_KEY: msg.content})
-                final_answer += msg.content
-            elif isinstance(msg.content, list):
-                for part in msg.content:
-                    if isinstance(part, str) and part.strip() != "":
-                        # print(part, end="", flush=True)
-                        writer({GENERATE_RESPONSE_STREAM_KEY: msg.content})
+            if isinstance(chunk.content, str) and chunk.content.strip():
+                writer({GENERATE_RESPONSE_STREAM_KEY: chunk.content})
+                final_answer += chunk.content
+            elif isinstance(chunk.content, list):
+                for part in chunk.content:
+                    if isinstance(part, str) and part.strip():
+                        writer({GENERATE_RESPONSE_STREAM_KEY: part})
                         final_answer += part
-            # if msg.chunk_position == "last":
-            #     writer({GENERATE_RESPONSE_STREAM_KEY: "\n\n"})
 
         return {"final_answer": final_answer}
 
@@ -108,7 +127,7 @@ def build_nodes(cfg: Config, tools) -> dict:
     return {
         "analyze_request": analyze_request,
         "plan_response": plan_response,
+        "normalize_tool_result": normalize_tool_result,
         "generate_response": generate_response,
         "commit_agent_response": commit_agent_response,
-        "normalize_tool_result": normalize_tool_result,
     }

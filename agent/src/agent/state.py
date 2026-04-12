@@ -1,17 +1,22 @@
 """State definitions for the agent graph."""
 
-from typing import TypedDict, Annotated, cast
+from typing import Annotated, TypedDict, cast
+
 from langchain_core.messages import AIMessage
-from langgraph.graph.message import add_messages, AnyMessage
+from langgraph.graph.message import AnyMessage, add_messages
 
 class AgentState(TypedDict):
     user_input: str
     messages: Annotated[list[AnyMessage], add_messages]
     conversation_messages: Annotated[list[AnyMessage], add_messages]
 
-    input_analysis: str
+    intent: str
     retrieved_context: str
-    plan_decision: str
+    question_type: str
+    knowledge_scope: str
+    needs_retrieval: bool
+    retrieval_query: str
+    missing_information: str
 
     final_answer: str
 
@@ -20,9 +25,13 @@ class AgentStateUpdate(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
     conversation_messages: Annotated[list[AnyMessage], add_messages]
 
-    input_analysis: str
+    intent: str
     retrieved_context: str
-    plan_decision: str
+    question_type: str
+    knowledge_scope: str
+    needs_retrieval: bool
+    retrieval_query: str
+    missing_information: str
 
     final_answer: str
 
@@ -31,9 +40,13 @@ def pretty_print_state(state: AgentState) -> dict:
         "user_input": state["user_input"],
         "messages": [str(msg) for msg in state["messages"]],
         "conversation_messages": [str(msg) for msg in state["conversation_messages"]],
-        "input_analysis": state.get("input_analysis", ""),
+        "intent": state.get("intent", ""),
         "retrieved_context": state.get("retrieved_context", ""),
-        "plan_decision": state.get("plan_decision", ""),
+        "question_type": state.get("question_type", ""),
+        "knowledge_scope": state.get("knowledge_scope", ""),
+        "needs_retrieval": state.get("needs_retrieval", False),
+        "retrieval_query": state.get("retrieval_query", ""),
+        "missing_information": state.get("missing_information", ""),
         "final_answer": state.get("final_answer", ""),
     }
 

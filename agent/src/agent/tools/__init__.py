@@ -8,6 +8,6 @@ from agent.tools.personal import create_personal_information_tool
 def create_tools(app_ctx: AppContext):
     """Create tool instances bound to the current app context."""
     return [
-        create_personal_information_tool(),
+        # create_personal_information_tool(),
         create_search_knowledge_base_tool(app_ctx),
     ]

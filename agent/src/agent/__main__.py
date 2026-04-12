@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from flask import Flask, Response, json, jsonify, request, stream_with_context
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from agent.config import get_config
 from agent.context import AppContext
@@ -15,14 +16,37 @@ from agent.state import AgentState, pretty_print_state
 
 type CompiledGraph = CompiledStateGraph[AgentState, None, AgentState, AgentState]
 
-def run_once(graph: CompiledGraph, content: str) -> Iterator[str]:
+def decode_conversation_messages(payload) -> list:
+    messages = []
+    if not isinstance(payload, list):
+        return messages
+
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        content = item.get("content")
+        if not isinstance(role, str) or not isinstance(content, str):
+            continue
+
+        if role == "user":
+            messages.append(HumanMessage(content=content))
+        elif role == "assistant":
+            messages.append(AIMessage(content=content))
+        elif role == "system":
+            messages.append(SystemMessage(content=content))
+        elif role == "tool":
+            messages.append(ToolMessage(content=content, tool_call_id="history"))
+
+    return messages
+
+def run_once(graph: CompiledGraph, content: str, history: list) -> Iterator[str]:
     """Run the graph once for a single user input."""
-    # output = graph.invoke({"user_input": content})  # type: ignore[arg-type]
     for chunk in graph.stream(
             {
                 "user_input": content,
                 "messages": [],
-                "conversation_messages": [],
+                "conversation_messages": history,
             }, # type: ignore[arg-type]
             version="v2",
             stream_mode=["custom", "values"],
@@ -59,9 +83,9 @@ def create_app(cfg, app_ctx: AppContext) -> Flask:
 
     @app.post("/v1/stream")
     def stream():
-        def generate(graph, content) -> Iterator[str]:
+        def generate(graph, content, history) -> Iterator[str]:
             yield sse_event({"type": "start"}, event="signal")
-            for token in run_once(graph, content):
+            for token in run_once(graph, content, history):
                 yield sse_event({"type": "token", "content": token}, event="message")
             yield sse_event({"type": "stop"}, event="signal")
 
@@ -73,8 +97,10 @@ def create_app(cfg, app_ctx: AppContext) -> Flask:
         if not isinstance(content, str) or not content.strip():
             return jsonify({"error": "content must be a non-empty string"}), 400
 
+        history = decode_conversation_messages(payload.get("messages"))
+
         try:
-            return Response(stream_with_context(generate(graph, content)), mimetype="text/event-stream")
+            return Response(stream_with_context(generate(graph, content, history)), mimetype="text/event-stream")
         except Exception as exc:
             app.logger.exception("request failed")
             return jsonify({"error": str(exc)}), 500

@@ -7,7 +7,7 @@ ANALYZE_SYSTEM_PROMPT = """
 You are performing a private internal analysis step for an assistant.
 The user will never see this output.
 
-Your job is to extract the user's intent and information needs, not to answer the user.
+Your job is to classify the request and decide whether retrieval is required.
 
 Rules:
 - Do not address the user.
@@ -16,12 +16,20 @@ Rules:
 - Do not say "I don't know", "I don't have access", or similar user-facing disclaimers.
 - Do not mention tool availability or implementation limits.
 - Do not answer the question.
+- Decide whether retrieval is likely needed based on the user question and visible conversation context.
+- Use retrieval when the answer probably depends on stored knowledge rather than pure reasoning or casual chat.
+- retrieval_query should usually be a cleaned-up search query for the knowledge base.
 - Keep the output concise and factual.
 
-Return exactly this format:
-Intent: <one sentence>
-Needed information: <one sentence>
-Missing information: <one sentence or "none">
+Return exactly one JSON object with these keys:
+{{
+  "intent": string,
+  "question_type": "knowledge" | "chit_chat" | "reasoning",
+  "knowledge_scope": "personal" | "project" | "document" | "general" | "none",
+  "needs_retrieval": boolean,
+  "retrieval_query": string,
+  "missing_information": string
+}}
 """.strip()
 
 
@@ -29,27 +37,23 @@ PLAN_SYSTEM_PROMPT = """
 You are performing a private internal planning step for an assistant.
 The user will never see this output.
 
-Given the user's question and the prior internal analysis, decide the next action.
+Given the user's question and the prior structured analysis, decide the next action.
 
 Rules:
 - Do not address the user.
 - Do not write a final answer.
 - Do not apologize.
-- Do not mention tool availability or implementation details.
-- If a tool is needed, call the appropriate tool instead of merely talking about it.
+- If the analysis says retrieval is needed, prefer calling the knowledge-base tool.
+- Use the provided retrieval_query when it is useful, but improve it if needed.
+- If a tool is needed, call it instead of merely describing what should happen.
 - If no tool is needed, return one short internal action sentence.
 - Never say things like "let me tell the user" or "I should respond to the user with...".
-
-Good non-tool outputs:
-- Answer directly from known context.
-- Ask for clarification in the final response.
-- Use retrieved evidence to answer.
 """.strip()
 
 
 RESPONSE_SYSTEM_PROMPT = """
 You are a grounded personal assistant.
-Answer the user's question using the conversation context, your analysis,
+Answer the user's question using the conversation context, the structured analysis,
 and any tool results already gathered.
 When tool results are used, prefer grounded, specific answers over vague generalities.
 Do not mention internal analysis, internal planning, or hidden tool orchestration.
@@ -66,7 +70,12 @@ def build_analysis_prompt() -> ChatPromptTemplate:
 def build_plan_prompt() -> ChatPromptTemplate:
     return ChatPromptTemplate([
         ("system", PLAN_SYSTEM_PROMPT),
-        ("system", "Previous analysis: {input_analysis}"),
+        ("system", "Intent: {intent}"),
+        ("system", "Question type: {question_type}"),
+        ("system", "Knowledge scope: {knowledge_scope}"),
+        ("system", "Needs retrieval: {needs_retrieval}"),
+        ("system", "Suggested retrieval query: {retrieval_query}"),
+        ("system", "Missing information: {missing_information}"),
         ("user", "User question: {question}"),
     ])
 
@@ -74,8 +83,10 @@ def build_plan_prompt() -> ChatPromptTemplate:
 def build_response_prompt() -> ChatPromptTemplate:
     return ChatPromptTemplate([
         ("system", RESPONSE_SYSTEM_PROMPT),
-        ("system", "Previous analysis: {input_analysis}"),
-        ("system", "Plan decision: {plan_decision}"),
+        ("system", "Intent: {intent}"),
+        ("system", "Question type: {question_type}"),
+        ("system", "Knowledge scope: {knowledge_scope}"),
+        ("system", "Missing information: {missing_information}"),
         ("system", "Retrieved context: {retrieved_context}"),
         ("user", "User question: {question}"),
     ])
