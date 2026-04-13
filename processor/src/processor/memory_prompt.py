@@ -1,7 +1,7 @@
+# ruff: noqa: E501
 """Prompt helpers for memory suggestion extraction."""
 
 from __future__ import annotations
-
 
 SYSTEM_PROMPT = """
 You extract candidate long-term memories for a local-first personal knowledge agent.

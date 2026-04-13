@@ -66,6 +66,7 @@
               export LANGSMITH_ENDPOINT=https://api.smith.langchain.com
               '';
             buildInputs = with pkgs; [
+              ruff
               (python.withPackages (
                 python-pkgs: with python-pkgs; [
                   pip

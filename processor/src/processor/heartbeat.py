@@ -2,8 +2,8 @@
 Heartbeat mechanism for renewing job leases in a worker process.
 """
 
-import threading
 import logging
+import threading
 
 from processor.config import Config
 from processor.db import query, transaction
@@ -14,13 +14,13 @@ class Heartbeat:
     """Renews the claimed job lease while work is in progress."""
 
     def __init__(
-            self,
-            cfg: Config,
-            worker_id: str,
-            job_id: int,
-            shutdown_event: threading.Event,
-            logger: logging.Logger,
-            ):
+        self,
+        cfg: Config,
+        worker_id: str,
+        job_id: int,
+        shutdown_event: threading.Event,
+        logger: logging.Logger,
+    ):
         self.cfg = cfg
         self.worker_id = worker_id
         self.job_id = job_id
@@ -53,9 +53,18 @@ class Heartbeat:
                     )
                 if job is None:
                     self.lost_lease = True
-                    self.logger.warning("[%s] lost lease for job %s", self.worker_id, self.job_id)
+                    self.logger.warning(
+                        "[%s] lost lease for job %s",
+                        self.worker_id,
+                        self.job_id,
+                    )
                     return
             except Exception as exc:
                 self.lost_lease = True
-                self.logger.exception("[%s] heartbeat failed for job %s: %s", self.worker_id, self.job_id, exc)
+                self.logger.exception(
+                    "[%s] heartbeat failed for job %s: %s",
+                    self.worker_id,
+                    self.job_id,
+                    exc,
+                )
                 return

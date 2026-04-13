@@ -1,14 +1,14 @@
 """Database access helpers for the agent."""
+
 from dataclasses import dataclass
-from typing import List
 
 import sqlalchemy
 from pgvector import Vector
 from pgvector.psycopg import register_vector
 from sqlalchemy import event
-from sqlc.pydb.query import Querier
 
 from agent.config import Config
+from sqlc.pydb.query import Querier
 
 
 @dataclass(frozen=True)
@@ -18,7 +18,7 @@ class SearchChunkResult:
     build_id: int
     chunk_index: int
     content: str
-    section_path: List[str]
+    section_path: list[str]
     semantic_type: str | None
     token_count: int | None
     start_offset: int | None
@@ -59,15 +59,19 @@ class AgentDB:
     def search_similar_chunks(
         self,
         query: str,
-        query_vector: List[float],
+        query_vector: list[float],
         limit: int = 5,
-    ) -> List[SearchChunkResult]:
-        """Search chunks using lexical + vector retrieval and fuse the results."""
+    ) -> list[SearchChunkResult]:
+        """
+        Search chunks using lexical + vector retrieval and fuse the results.
+        """
         with self.engine.begin() as conn:
             q = Querier(conn)
             q.set_local_hnsw_ef_search100()
 
-            lexical_rows = list(q.search_lexical_chunks(websearch_to_tsquery=query, limit=limit, offset=0))
+            lexical_rows = list(
+                q.search_lexical_chunks(websearch_to_tsquery=query, limit=limit, offset=0)
+            )
             combined: dict[int, SearchChunkResult] = {}
 
             for row in lexical_rows:
@@ -93,7 +97,9 @@ class AgentDB:
                 combined[item.chunk_id] = item
 
             if query_vector:
-                vector_rows = list(q.search_vector_chunks(embedding=Vector(query_vector), limit=limit, offset=0))
+                vector_rows = list(
+                    q.search_vector_chunks(embedding=Vector(query_vector), limit=limit, offset=0)
+                )
                 for row in vector_rows:
                     if row.chunk_id in combined:
                         existing = combined[row.chunk_id]
@@ -141,22 +147,31 @@ class AgentDB:
 
             results = list(combined.values())
             if not query_vector:
-                results.sort(key=lambda item: (item.lexical_score, item.chunk_id), reverse=True)
+                results.sort(
+                    key=lambda item: (item.lexical_score, item.chunk_id),
+                    reverse=True,
+                )
                 return results
 
             fused = [item for item in results if item.combined_score > 0]
-            fused.sort(key=lambda item: (item.combined_score, item.chunk_id), reverse=True)
+            fused.sort(
+                key=lambda item: (item.combined_score, item.chunk_id),
+                reverse=True,
+            )
             if fused:
                 return fused
 
-            results.sort(key=lambda item: (item.vector_score, item.chunk_id), reverse=True)
+            results.sort(
+                key=lambda item: (item.vector_score, item.chunk_id),
+                reverse=True,
+            )
             return results
 
     def search_memories(
         self,
         query: str,
         limit: int = 8,
-    ) -> List[MemoryResult]:
+    ) -> list[MemoryResult]:
         with self.engine.begin() as conn:
             q = Querier(conn)
             rows = list(q.search_active_memories(query=query, memory_offset=0, memory_limit=limit))
@@ -166,7 +181,7 @@ class AgentDB:
         self,
         subject: str = "user",
         limit: int = 12,
-    ) -> List[MemoryResult]:
+    ) -> list[MemoryResult]:
         with self.engine.begin() as conn:
             q = Querier(conn)
             rows = list(q.list_active_memories_by_subject(subject=subject, limit=limit, offset=0))
@@ -177,9 +192,9 @@ def _sqlalchemy_database_url(database_url: str) -> str:
     if database_url.startswith("postgresql+psycopg://"):
         return database_url
     if database_url.startswith("postgresql://"):
-        return "postgresql+psycopg://" + database_url[len("postgresql://"):]
+        return "postgresql+psycopg://" + database_url[len("postgresql://") :]
     if database_url.startswith("postgres://"):
-        return "postgresql+psycopg://" + database_url[len("postgres://"):]
+        return "postgresql+psycopg://" + database_url[len("postgres://") :]
     return database_url
 
 

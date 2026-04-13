@@ -14,8 +14,8 @@ from agent.retrieval.search import (
 )
 
 __all__ = [
-    "create_get_profile_context_tool",
     "create_search_knowledge_base_tool",
+    "create_get_profile_context_tool",
     "create_search_memories_tool",
     "format_memory_results",
     "format_search_results",

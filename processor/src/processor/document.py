@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from psycopg.types.json import Jsonb
+
 from processor.db import (
     UpdateDocumentBasicsParams,
     query,
@@ -7,7 +10,7 @@ from processor.db import (
 from processor.metadata import detect_mime_type, sha256_file
 from processor.parsing import extract_text
 from processor.runtime import LoadedDocument, PermanentJobError
-from pathlib import Path
+
 
 def load_document_content(document_id: int) -> LoadedDocument | None:
     with transaction() as conn:
@@ -98,6 +101,7 @@ def load_document_content(document_id: int) -> LoadedDocument | None:
 
         raise PermanentJobError(f"unsupported source type {source.type}")
 
+
 def mark_document_deleted(conn, document_id: int) -> None:
     q = query(conn)
     document = q.get_document_by_id(id=document_id)
@@ -115,6 +119,7 @@ def mark_document_deleted(conn, document_id: int) -> None:
             metadata=Jsonb(document.metadata),
         )
     )
+
 
 def document_title_from_path(path: Path) -> str:
     return path.name or str(path)

@@ -19,8 +19,8 @@ from processor.db import (
 from processor.heartbeat import Heartbeat
 from processor.memory import process_extract_memory_suggestions
 from processor.reindex import process_reindex_document
-from processor.scan import process_scan_source
 from processor.runtime import PermanentJobError, coerce_int, ensure_mapping
+from processor.scan import process_scan_source
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,6 +36,7 @@ PURGE_JOB_TYPE = "purge_source_content"
 MEMORY_EXTRACTION_JOB_TYPE = "extract_memory_suggestions"
 
 WORKER_ID = str(uuid.uuid4())[:8]
+
 
 def process_purge_source_content(job: models.Job, heartbeat: Heartbeat) -> None:
     payload = ensure_mapping(job.payload)
@@ -60,7 +61,15 @@ def process_job(cfg: Config, shutdown_event: threading.Event, job: models.Job) -
     try:
         logger.info("[%s] processing job %s (%s)", WORKER_ID, job.id, job.type)
         if job.type == REINDEX_JOB_TYPE:
-            process_reindex_document(cfg, WORKER_ID, PARSER_VERSION, CHUNKER_VERSION, heartbeat, job, logger)
+            process_reindex_document(
+                cfg,
+                WORKER_ID,
+                PARSER_VERSION,
+                CHUNKER_VERSION,
+                heartbeat,
+                job,
+                logger,
+            )
         elif job.type == SCAN_JOB_TYPE:
             process_scan_source(REINDEX_JOB_TYPE, job, heartbeat)
         elif job.type == PURGE_JOB_TYPE:

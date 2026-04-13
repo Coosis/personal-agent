@@ -1,33 +1,48 @@
 from logging import Logger
+
 from psycopg.types.json import Jsonb
-from sqlc.pydb.models import Job
-from sqlc.pydb.query import CreateChunkParams, UpdateDocumentBasicsParams
-from processor.runtime import LoadedDocument, PermanentJobError, RetryableJobError, coerce_int, ensure_mapping
+
 from processor.chunking import Chunk, chunk_document
 from processor.config import Config
 from processor.db import query, transaction
 from processor.document import load_document_content, mark_document_deleted
 from processor.embedding import get_embedding_service
 from processor.heartbeat import Heartbeat
+from processor.runtime import (
+    LoadedDocument,
+    PermanentJobError,
+    RetryableJobError,
+    coerce_int,
+    ensure_mapping,
+)
+from sqlc.pydb.models import Job
+from sqlc.pydb.query import CreateChunkParams, UpdateDocumentBasicsParams
+
 
 # only side effect is at the end when activating the new build
 def process_reindex_document(
-        cfg: Config,
-        worker_id: str,
-        parser_version: str,
-        chunker_version: str,
-        heartbeat: Heartbeat,
-        job: Job,
-        logger: Logger
-        ) -> None:
-    payload = ensure_mapping(job.payload) # asserts payload is dict-like
-    document_id = coerce_int(payload.get("document_id"), "document_id") # asserts document_id is int
-    loaded = load_document_content(document_id) # db query to get the document
+    cfg: Config,
+    worker_id: str,
+    parser_version: str,
+    chunker_version: str,
+    heartbeat: Heartbeat,
+    job: Job,
+    logger: Logger,
+) -> None:
+    payload = ensure_mapping(job.payload)  # asserts payload is dict-like
+    document_id = coerce_int(
+        payload.get("document_id"), "document_id"
+    )  # asserts document_id is int
+    loaded = load_document_content(document_id)  # db query to get the document
     if loaded is None:
         with transaction() as conn:
             mark_document_deleted(conn, document_id)
             query(conn).complete_job(id=job.id)
-        logger.info("[%s] document %s no longer has source content, marked deleted", worker_id, document_id)
+        logger.info(
+            "[%s] document %s no longer has source content, marked deleted",
+            worker_id,
+            document_id,
+        )
         return
 
     heartbeat.ensure_active()
@@ -52,7 +67,15 @@ def process_reindex_document(
     heartbeat.ensure_active()
     activate_new_build(job.id, loaded, chunks, embeddings, parser_version, chunker_version)
 
-def activate_new_build(job_id: int, loaded: LoadedDocument, chunks: list[Chunk], embeddings: list[list[float]], parser_version: str, chunker_version: str) -> None:
+
+def activate_new_build(
+    job_id: int,
+    loaded: LoadedDocument,
+    chunks: list[Chunk],
+    embeddings: list[list[float]],
+    parser_version: str,
+    chunker_version: str,
+) -> None:
     with transaction() as conn:
         q = query(conn)
         document = q.get_document_by_id(id=loaded.document_id)
@@ -69,7 +92,7 @@ def activate_new_build(job_id: int, loaded: LoadedDocument, chunks: list[Chunk],
         if build is None:
             raise RetryableJobError(f"failed to create build for document {loaded.document_id}")
 
-        for chunk, embedding in zip(chunks, embeddings):
+        for chunk, embedding in zip(chunks, embeddings, strict=False):
             q.create_chunk(
                 CreateChunkParams(
                     document_id=loaded.document_id,

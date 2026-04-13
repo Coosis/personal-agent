@@ -9,7 +9,12 @@ from typing import Any
 import httpx
 
 from processor.config import Config
-from processor.db import CreateMemorySuggestionParams, FindPendingMemorySuggestionMatchParams, query, transaction
+from processor.db import (
+    CreateMemorySuggestionParams,
+    FindPendingMemorySuggestionMatchParams,
+    query,
+    transaction,
+)
 from processor.heartbeat import Heartbeat
 from processor.memory_prompt import SYSTEM_PROMPT, build_user_prompt
 from processor.runtime import PermanentJobError, coerce_int, ensure_mapping
@@ -142,7 +147,10 @@ def extract_memory_suggestions(
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": build_user_prompt(kind=kind, title=title, content=trimmed)},
+                {
+                    "role": "user",
+                    "content": build_user_prompt(kind=kind, title=title, content=trimmed),
+                },
             ],
         },
         timeout=60,
@@ -208,12 +216,15 @@ def store_suggestions(
 ) -> None:
     for suggestion in suggestions:
         heartbeat.ensure_active()
-        if q.find_active_memory_match(
-            subject=suggestion.subject,
-            category=suggestion.category,
-            key=suggestion.key,
-            value=suggestion.value,
-        ) is not None:
+        if (
+            q.find_active_memory_match(
+                subject=suggestion.subject,
+                category=suggestion.category,
+                key=suggestion.key,
+                value=suggestion.value,
+            )
+            is not None
+        ):
             continue
 
         existing = q.find_pending_memory_suggestion_match(

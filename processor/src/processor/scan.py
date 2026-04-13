@@ -17,21 +17,23 @@ from processor.document import document_title_from_path
 from processor.heartbeat import Heartbeat
 from processor.metadata import detect_mime_type, file_fingerprint
 from processor.runtime import (
-        PermanentJobError,
-        RetryableJobError,
-        ScannedFile,
-        ensure_mapping,
-        coerce_int,
-        )
+    PermanentJobError,
+    RetryableJobError,
+    ScannedFile,
+    coerce_int,
+    ensure_mapping,
+)
 
-# scan a source for changes and update documents accordingly, then enqueue reindex jobs for changed documents
-# for file and directory sources
+
+# scan a source for changes and update documents accordingly,
+# then enqueue reindex jobs for changed documents for file
+# and directory sources
 def process_scan_source(reindex_job_type: str, job: models.Job, heartbeat: Heartbeat) -> None:
     payload = ensure_mapping(job.payload)
     source_id = coerce_int(payload.get("source_id"), "source_id")
 
     with transaction() as conn:
-        source = query(conn).get_source_by_id(id=source_id) # no side effect db query lookup
+        source = query(conn).get_source_by_id(id=source_id)  # no side effect db query lookup
     if source is None:
         raise PermanentJobError(f"source {source_id} not found")
 
@@ -44,7 +46,13 @@ def process_scan_source(reindex_job_type: str, job: models.Job, heartbeat: Heart
 
     raise PermanentJobError(f"scan_source does not support source type {source.type}")
 
-def scan_file_source(reindex_job_type: str, job_id: int, source: models.Source, heartbeat: Heartbeat) -> None:
+
+def scan_file_source(
+    reindex_job_type: str,
+    job_id: int,
+    source: models.Source,
+    heartbeat: Heartbeat,
+) -> None:
     if not source.locator:
         raise PermanentJobError(f"file source {source.id} has no locator")
 
@@ -130,7 +138,12 @@ def scan_file_source(reindex_job_type: str, job_id: int, source: models.Source, 
         q.complete_job(id=job_id)
 
 
-def scan_directory_source(reindex_job_type: str, job_id: int, source: models.Source, heartbeat: Heartbeat) -> None:
+def scan_directory_source(
+    reindex_job_type: str,
+    job_id: int,
+    source: models.Source,
+    heartbeat: Heartbeat,
+) -> None:
     if not source.locator:
         raise PermanentJobError(f"directory source {source.id} has no locator")
 
@@ -142,8 +155,7 @@ def scan_directory_source(reindex_job_type: str, job_id: int, source: models.Sou
     with transaction() as conn:
         q = query(conn)
         existing_items = {
-            item.item_key: item
-            for item in q.list_source_items_by_source_id(source_id=source.id)
+            item.item_key: item for item in q.list_source_items_by_source_id(source_id=source.id)
         }
 
         for scanned in discovered:
@@ -203,7 +215,14 @@ def scan_directory_source(reindex_job_type: str, job_id: int, source: models.Sou
                 raise RetryableJobError(f"failed to create document for source_item {item.id}")
 
             if changed:
-                enqueue_reindex_document(reindex_job_type, conn, document.id, source.id, "scan_source", source_item_id=item.id)
+                enqueue_reindex_document(
+                    reindex_job_type,
+                    conn,
+                    document.id,
+                    source.id,
+                    "scan_source",
+                    source_item_id=item.id,
+                )
 
         for item_key, existing in existing_items.items():
             heartbeat.ensure_active()
@@ -242,7 +261,15 @@ def discover_directory_files(root: Path) -> list[ScannedFile]:
         )
     return discovered
 
-def enqueue_reindex_document(reindex_job_type: str, conn, document_id: int, source_id: int, trigger: str, source_item_id: int | None = None) -> None:
+
+def enqueue_reindex_document(
+    reindex_job_type: str,
+    conn,
+    document_id: int,
+    source_id: int,
+    trigger: str,
+    source_item_id: int | None = None,
+) -> None:
     q = query(conn)
     payload = build_reindex_payload(document_id, source_id, trigger, source_item_id)
     q.create_job(
@@ -255,7 +282,13 @@ def enqueue_reindex_document(reindex_job_type: str, conn, document_id: int, sour
         )
     )
 
-def build_reindex_payload(document_id: int, source_id: int, trigger: str, source_item_id: int | None = None) -> dict[str, Any]:
+
+def build_reindex_payload(
+    document_id: int,
+    source_id: int,
+    trigger: str,
+    source_item_id: int | None = None,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "document_id": document_id,
         "source_id": source_id,

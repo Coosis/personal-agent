@@ -1,7 +1,9 @@
 """Document parsing utilities."""
+
 import logging
 import mimetypes
 from pathlib import Path
+
 from unstructured.partition.auto import partition
 
 logger = logging.getLogger(__name__)
@@ -50,7 +52,7 @@ def extract_text(file_path: str) -> str:
         try:
             return path.read_bytes().decode("utf-8", errors="ignore")
         except Exception:
-            raise ValueError(f"Cannot extract text from {file_path}: {e}")
+            raise ValueError(f"Cannot extract text from {file_path}: {e}") from e
 
 
 def get_document_metadata(file_path: str) -> dict:

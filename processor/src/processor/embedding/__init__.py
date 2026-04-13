@@ -1,7 +1,6 @@
 """Embedding service using Alibaba DashScope."""
 
 import logging
-from typing import List
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -29,7 +28,7 @@ class EmbeddingService:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
     )
-    def embed(self, texts: List[str]) -> List[List[float]]:
+    def embed(self, texts: list[str]) -> list[list[float]]:
         """Get embeddings for a list of texts."""
         if not texts:
             return []
@@ -61,12 +60,12 @@ class EmbeddingService:
 
         # Reconstruct output with empty embeddings for skipped texts
         all_embeddings = [[0.0] * self.dimensions for _ in texts]
-        for orig_idx, embedding in zip(original_indices, filtered_embeddings):
+        for orig_idx, embedding in zip(original_indices, filtered_embeddings, strict=False):
             all_embeddings[orig_idx] = embedding
 
         return all_embeddings
 
-    def _embed_batch(self, texts: List[str]) -> List[List[float]]:
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed a single batch of texts using OpenAI-compatible format."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -89,7 +88,11 @@ class EmbeddingService:
                 "dimensions": self.dimensions,
             }
 
-        logger.debug(f"Embedding request: model={self.model}, dimensions={self.dimensions}, texts={len(texts)}")
+        logger.debug(
+            f"Embedding request: model={self.model}, "
+            + f"dimensions={self.dimensions}, "
+            + f"texts={len(texts)}"
+        )
 
         try:
             with httpx.Client(timeout=60.0) as client:
@@ -108,11 +111,13 @@ class EmbeddingService:
                 # Sort by index and extract embeddings
                 embeddings = sorted(data["data"], key=lambda x: x["index"])
                 result = [e["embedding"] for e in embeddings]
-                
+
                 # Verify dimensions
                 if result and len(result[0]) != self.dimensions:
-                    logger.warning(f"API returned {len(result[0])} dimensions, expected {self.dimensions}")
-                
+                    logger.warning(
+                        f"API returned {len(result[0])} dimensions, expected {self.dimensions}"
+                    )
+
                 return result
 
         except httpx.HTTPStatusError as e:
@@ -122,7 +127,7 @@ class EmbeddingService:
             logger.error(f"Embedding request failed: {e}")
             raise
 
-    def embed_single(self, text: str) -> List[float]:
+    def embed_single(self, text: str) -> list[float]:
         """Get embedding for a single text."""
         embeddings = self.embed([text])
         return embeddings[0] if embeddings else []
@@ -130,6 +135,7 @@ class EmbeddingService:
 
 # Global embedding service instance
 _embedding_service: EmbeddingService | None = None
+
 
 def get_embedding_service() -> EmbeddingService:
     """Get or create the embedding service singleton."""

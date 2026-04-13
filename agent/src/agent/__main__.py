@@ -2,20 +2,24 @@
 
 from collections.abc import Iterator
 from typing import Any
+
 from flask import Flask, Response, json, jsonify, request, stream_with_context
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
+from langgraph.graph.state import CompiledStateGraph
 
 from agent.config import get_config
 from agent.context import AppContext
 from agent.graph import build_graph
-from langgraph.graph.state import CompiledStateGraph
-
-from agent.context import AppContext
-from agent.nodes import GENERATE_RESPONSE_STREAM_KEY
-from agent.state import AgentState, pretty_print_state
-
+from agent.nodes.shared import GENERATE_RESPONSE_STREAM_KEY
+from agent.state import AgentState
 
 type CompiledGraph = CompiledStateGraph[AgentState, None, AgentState, AgentState]
+
 
 def decode_conversation_messages(payload) -> list:
     messages = []
@@ -41,29 +45,33 @@ def decode_conversation_messages(payload) -> list:
 
     return messages
 
+
 def run_once(graph: CompiledGraph, content: str, history: list) -> Iterator[dict[str, Any]]:
     """Run the graph once for a single user input."""
     final_state: dict[str, Any] | None = None
     for chunk in graph.stream(
-            {
-                "user_input": content,
-                "messages": [],
-                "conversation_messages": history,
-                "retrieved_context": "",
-                "retrieved_citations": [],
-                "latest_observation": "",
-                "react_step_count": 0,
-                "observed_tool_messages": 0,
-                "next_citation_number": 1,
-                "should_continue": False,
-                "final_citations": [],
-            }, # type: ignore[arg-type]
-            version="v2",
-            stream_mode=["custom", "values"],
-            subgraphs=True,
-            ):
+        {
+            "user_input": content,
+            "messages": [],
+            "conversation_messages": history,
+            "retrieved_context": "",
+            "retrieved_citations": [],
+            "latest_observation": "",
+            "react_step_count": 0,
+            "observed_tool_messages": 0,
+            "next_citation_number": 1,
+            "should_continue": False,
+            "final_citations": [],
+        },  # type: ignore[arg-type]
+        version="v2",
+        stream_mode=["custom", "values"],
+        subgraphs=True,
+    ):
         if chunk["type"] == "custom":
-            yield {"type": "token", "content": chunk["data"][GENERATE_RESPONSE_STREAM_KEY]}
+            yield {
+                "type": "token",
+                "content": chunk["data"][GENERATE_RESPONSE_STREAM_KEY],
+            }
 
         elif chunk["type"] == "values":
             final_state = chunk["data"]
@@ -88,7 +96,7 @@ def create_app(cfg, app_ctx: AppContext) -> Flask:
         return jsonify({"status": "ok"})
 
     # streaming response using sse
-    def sse_event(data: dict, event = None) -> str:
+    def sse_event(data: dict, event=None) -> str:
         lines = []
         if event is not None:
             lines.append(f"event: {event}")
@@ -106,7 +114,10 @@ def create_app(cfg, app_ctx: AppContext) -> Flask:
                 citations: list[dict[str, Any]] = []
                 for item in run_once(graph, content, history):
                     if item["type"] == "token":
-                        yield sse_event({"type": "token", "content": item["content"]}, event="message")
+                        yield sse_event(
+                            {"type": "token", "content": item["content"]},
+                            event="message",
+                        )
                     elif item["type"] == "final":
                         raw_citations = item.get("citations", [])
                         if isinstance(raw_citations, list):
@@ -127,7 +138,10 @@ def create_app(cfg, app_ctx: AppContext) -> Flask:
         history = decode_conversation_messages(payload.get("messages"))
 
         try:
-            return Response(stream_with_context(generate(graph, content, history)), mimetype="text/event-stream")
+            return Response(
+                stream_with_context(generate(graph, content, history)),
+                mimetype="text/event-stream",
+            )
         except Exception as exc:
             app.logger.exception("request failed")
             return jsonify({"error": str(exc)}), 500

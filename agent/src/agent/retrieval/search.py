@@ -29,17 +29,19 @@ def format_search_results(results) -> tuple[str, list[dict[str, Any]]]:
             f"Vector score: {result.vector_score:.2f}\n"
             f"Combined score: {result.combined_score:.2f}\n"
         )
-        citations.append({
-            "id": citation_id,
-            "kind": "document_chunk",
-            "chunk_id": result.chunk_id,
-            "document_id": result.document_id,
-            "build_id": result.build_id,
-            "chunk_index": result.chunk_index,
-            "document_title": result.document_title,
-            "source": source_ref,
-            "snippet": result.content,
-        })
+        citations.append(
+            {
+                "id": citation_id,
+                "kind": "document_chunk",
+                "chunk_id": result.chunk_id,
+                "document_id": result.document_id,
+                "build_id": result.build_id,
+                "chunk_index": result.chunk_index,
+                "document_title": result.document_title,
+                "source": source_ref,
+                "snippet": result.content,
+            }
+        )
     return "\n".join(formatted_results), citations
 
 

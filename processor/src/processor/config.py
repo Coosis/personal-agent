@@ -1,8 +1,8 @@
 """Configuration management for the processor."""
 
+import os
 from dataclasses import dataclass
 from functools import lru_cache
-import os
 
 DEFAULT_DATABASE_URL = "postgres://postgres:postgres@localhost:5433/agentdb"
 DEFAULT_LEASE_DURATION_SECONDS = 60
@@ -44,7 +44,9 @@ def validate_config(cfg: Config) -> None:
     if cfg.heartbeat_interval_seconds <= 0:
         raise ValueError("HEARTBEAT_INTERVAL_SECONDS must be positive")
     if cfg.heartbeat_interval_seconds >= cfg.lease_duration_seconds:
-        raise ValueError("HEARTBEAT_INTERVAL_SECONDS must be smaller than LEASE_DURATION_SECONDS")
+        raise ValueError(
+            "HEARTBEAT_INTERVAL_SECONDS must be smaller than LEASE_DURATION_SECONDS"  # noqa: E501
+        )
     if cfg.max_retries <= 0:
         raise ValueError("MAX_RETRIES must be positive")
     if cfg.poll_interval_seconds <= 0:
@@ -59,16 +61,24 @@ def validate_config(cfg: Config) -> None:
 def get_config() -> Config:
     cfg = Config(
         database_url=os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL),
-        lease_duration_seconds=int(os.getenv("LEASE_DURATION_SECONDS", DEFAULT_LEASE_DURATION_SECONDS)),
-        heartbeat_interval_seconds=int(os.getenv("HEARTBEAT_INTERVAL_SECONDS", DEFAULT_HEARTBEAT_INTERVAL_SECONDS)),
+        lease_duration_seconds=int(
+            os.getenv("LEASE_DURATION_SECONDS", DEFAULT_LEASE_DURATION_SECONDS)
+        ),
+        heartbeat_interval_seconds=int(
+            os.getenv("HEARTBEAT_INTERVAL_SECONDS", DEFAULT_HEARTBEAT_INTERVAL_SECONDS)
+        ),
         max_retries=int(os.getenv("MAX_RETRIES", DEFAULT_MAX_RETRIES)),
         alibaba_api_key=os.getenv("ALIBABA_API_KEY", ""),
-        alibaba_embedding_model=os.getenv("ALIBABA_EMBEDDING_MODEL", DEFAULT_ALIBABA_EMBEDDING_MODEL),
+        alibaba_embedding_model=os.getenv(
+            "ALIBABA_EMBEDDING_MODEL", DEFAULT_ALIBABA_EMBEDDING_MODEL
+        ),
         embedding_dimensions=int(os.getenv("EMBEDDING_DIMENSIONS", DEFAULT_EMBEDDING_DIMENSIONS)),
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
         openrouter_model=os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL),
         openrouter_api_url=os.getenv("OPENROUTER_API_URL", DEFAULT_OPENROUTER_API_URL),
-        poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS)),
+        poll_interval_seconds=int(
+            os.getenv("POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS)
+        ),
         chunk_size=int(os.getenv("CHUNK_SIZE", DEFAULT_CHUNK_SIZE)),
         chunk_overlap=int(os.getenv("CHUNK_OVERLAP", DEFAULT_CHUNK_OVERLAP)),
     )

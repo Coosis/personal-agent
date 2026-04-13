@@ -5,12 +5,12 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any
 
 from langchain_text_splitters import (
+    Language,
     MarkdownHeaderTextSplitter,
     RecursiveCharacterTextSplitter,
-    Language,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,41 +22,50 @@ class Chunk:
 
     content: str
     index: int
-    section_path: List[str] = field(default_factory=list)
-    semantic_type: Optional[str] = None
-    token_count: Optional[int] = None
-    start_offset: Optional[int] = None
-    end_offset: Optional[int] = None
-    content_hash: Optional[str] = None
+    section_path: list[str] = field(default_factory=list)
+    semantic_type: str | None = None
+    token_count: int | None = None
+    start_offset: int | None = None
+    end_offset: int | None = None
+    content_hash: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def chunk_document(
-        title: str,
-        content: str,
-        extension: str,
-        chunk_size: int = 512,
-        chunk_overlap: int = 50,
-        ) -> List[Chunk]:
+    title: str,
+    content: str,
+    extension: str,
+    chunk_size: int = 512,
+    chunk_overlap: int = 50,
+) -> list[Chunk]:
     """Chunk a document based on its type."""
-    
+
     # Skip empty content
     if not content or not content.strip():
         return []
-    
+
     # Markdown files - use header-based chunking
     if extension in (".md", ".markdown"):
         chunks = chunk_markdown(content, chunk_size, chunk_overlap)
-    
+
     # Code files - use language-aware chunking
-    elif extension in (".py", ".js", ".ts", ".go", ".java", ".cpp", ".c", ".rs"):
+    elif extension in (
+        ".py",
+        ".js",
+        ".ts",
+        ".go",
+        ".java",
+        ".cpp",
+        ".c",
+        ".rs",
+    ):
         chunks = chunk_code(content, extension, chunk_size, chunk_overlap)
-    
+
     # Default - recursive character chunking
     else:
         chunks = chunk_recursive(content, chunk_size, chunk_overlap)
-    
-    filtered: List[Chunk] = []
+
+    filtered: list[Chunk] = []
     title_prefix = format_title_prefix(title)
     for chunk in chunks:
         if not chunk.content or not chunk.content.strip():
@@ -74,7 +83,7 @@ def chunk_document(
     return filtered
 
 
-def chunk_markdown(content: str, chunk_size: int, chunk_overlap: int) -> List[Chunk]:
+def chunk_markdown(content: str, chunk_size: int, chunk_overlap: int) -> list[Chunk]:
     """Chunk markdown documents by headers."""
     # First split by headers
     headers_to_split_on = [
@@ -82,25 +91,25 @@ def chunk_markdown(content: str, chunk_size: int, chunk_overlap: int) -> List[Ch
         ("##", "Header 2"),
         ("###", "Header 3"),
     ]
-    
+
     markdown_splitter = MarkdownHeaderTextSplitter(
         headers_to_split_on=headers_to_split_on,
         strip_headers=False,
     )
-    
+
     try:
         md_chunks = markdown_splitter.split_text(content)
     except Exception:
         # Fallback to recursive if markdown parsing fails
         return chunk_recursive(content, chunk_size, chunk_overlap)
-    
+
     # Further split large chunks
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         length_function=len,
     )
-    
+
     chunks = []
     for _, doc in enumerate(md_chunks):
         # Get header path from metadata
@@ -111,31 +120,35 @@ def chunk_markdown(content: str, chunk_size: int, chunk_overlap: int) -> List[Ch
             heading_path.append(doc.metadata["Header 2"])
         if "Header 3" in doc.metadata:
             heading_path.append(doc.metadata["Header 3"])
-        
+
         # If chunk is too large, split it further
         if len(doc.page_content) > chunk_size * 1.5:
             sub_chunks = text_splitter.split_text(doc.page_content)
             for _, sub_content in enumerate(sub_chunks):
-                chunks.append(Chunk(
-                    content=sub_content,
+                chunks.append(
+                    Chunk(
+                        content=sub_content,
+                        index=len(chunks),
+                        section_path=heading_path.copy(),
+                        semantic_type="section",
+                        metadata={"char_count": len(sub_content)},
+                    )
+                )
+        else:
+            chunks.append(
+                Chunk(
+                    content=doc.page_content,
                     index=len(chunks),
                     section_path=heading_path.copy(),
                     semantic_type="section",
-                    metadata={"char_count": len(sub_content)},
-                ))
-        else:
-            chunks.append(Chunk(
-                content=doc.page_content,
-                index=len(chunks),
-                section_path=heading_path.copy(),
-                semantic_type="section",
-                metadata={"char_count": len(doc.page_content)},
-            ))
-    
+                    metadata={"char_count": len(doc.page_content)},
+                )
+            )
+
     return chunks
 
 
-def chunk_code(content: str, extension: str, chunk_size: int, chunk_overlap: int) -> List[Chunk]:
+def chunk_code(content: str, extension: str, chunk_size: int, chunk_overlap: int) -> list[Chunk]:
     """Chunk code files using language-aware splitter."""
     language_map = {
         ".py": Language.PYTHON,
@@ -147,9 +160,9 @@ def chunk_code(content: str, extension: str, chunk_size: int, chunk_overlap: int
         ".c": Language.C,
         ".rs": Language.RUST,
     }
-    
+
     language = language_map.get(extension)
-    
+
     if language:
         splitter = RecursiveCharacterTextSplitter.from_language(
             language=language,
@@ -161,9 +174,9 @@ def chunk_code(content: str, extension: str, chunk_size: int, chunk_overlap: int
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
-    
+
     texts = splitter.split_text(content)
-    
+
     return [
         Chunk(
             content=text,
@@ -175,16 +188,16 @@ def chunk_code(content: str, extension: str, chunk_size: int, chunk_overlap: int
     ]
 
 
-def chunk_recursive(content: str, chunk_size: int, chunk_overlap: int) -> List[Chunk]:
+def chunk_recursive(content: str, chunk_size: int, chunk_overlap: int) -> list[Chunk]:
     """Default recursive character chunking."""
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         separators=["\n\n", "\n", ". ", "! ", "? ", " ", ""],
     )
-    
+
     texts = splitter.split_text(content)
-    
+
     return [
         Chunk(
             content=text,

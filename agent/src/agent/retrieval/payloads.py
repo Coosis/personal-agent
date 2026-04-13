@@ -6,8 +6,13 @@ import json
 from typing import Any
 
 
+# generate a json object with:
+# "context": str
+# "citations": list[dict[str, Any]]
 def encode_tool_payload(context: str, citations: list[dict[str, Any]]) -> str:
-    return json.dumps({
-        "context": context,
-        "citations": citations,
-    })
+    return json.dumps(
+        {
+            "context": context,
+            "citations": citations,
+        }
+    )

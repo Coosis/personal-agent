@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator, Optional
 
 import sqlalchemy
 from pgvector.psycopg import register_vector
 from sqlalchemy import event
 
 from processor.config import get_config
-
 from sqlc.pydb import models
 from sqlc.pydb.query import (
     CreateChunkParams,
@@ -23,7 +22,7 @@ from sqlc.pydb.query import (
     UpsertSourceItemParams,
 )
 
-_engine: Optional[sqlalchemy.Engine] = None
+_engine: sqlalchemy.Engine | None = None
 
 
 def _sqlalchemy_database_url(database_url: str) -> str:
@@ -57,7 +56,7 @@ def _register_vector(dbapi_connection, _connection_record) -> None:
 
 
 @contextmanager
-def transaction() -> Generator[sqlalchemy.engine.Connection, None, None]:
+def transaction() -> Generator[sqlalchemy.engine.Connection]:
     engine = init_engine()
     with engine.begin() as conn:
         yield conn

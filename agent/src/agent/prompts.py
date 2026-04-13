@@ -1,7 +1,7 @@
+# ruff: noqa: E501
 """Prompt templates used by the agent graph."""
 
 from langchain_core.prompts import ChatPromptTemplate
-
 
 ANALYZE_SYSTEM_PROMPT = """
 You are performing a private internal analysis step for an assistant.
@@ -93,47 +93,56 @@ Do not mention internal analysis, internal planning, or hidden tool orchestratio
 
 
 def build_analysis_prompt() -> ChatPromptTemplate:
-    return ChatPromptTemplate([
-        ("system", ANALYZE_SYSTEM_PROMPT),
-        ("user", "{question}"),
-    ])
+    return ChatPromptTemplate(
+        [
+            ("system", ANALYZE_SYSTEM_PROMPT),
+            ("user", "{question}"),
+        ]
+    )
 
 
 def build_plan_prompt() -> ChatPromptTemplate:
-    return ChatPromptTemplate([
-        ("system", PLAN_SYSTEM_PROMPT),
-        ("system", "Intent: {intent}"),
-        ("system", "Question type: {question_type}"),
-        ("system", "Knowledge scope: {knowledge_scope}"),
-        ("system", "Needs retrieval: {needs_retrieval}"),
-        ("system", "Suggested retrieval query: {retrieval_query}"),
-        ("system", "Missing information: {missing_information}"),
-        ("system", "Current ReAct step count: {react_step_count}"),
-        ("system", "Current retrieved context: {retrieved_context}"),
-        ("user", "User question: {question}"),
-    ])
+    return ChatPromptTemplate(
+        [
+            ("system", PLAN_SYSTEM_PROMPT),
+            ("system", "Intent: {intent}"),
+            ("system", "Question type: {question_type}"),
+            ("system", "Knowledge scope: {knowledge_scope}"),
+            ("system", "Needs retrieval: {needs_retrieval}"),
+            ("system", "Suggested retrieval query: {retrieval_query}"),
+            ("system", "Missing information: {missing_information}"),
+            ("system", "Current ReAct step count: {react_step_count}"),
+            ("system", "Current retrieved context: {retrieved_context}"),
+            ("user", "User question: {question}"),
+        ]
+    )
+
 
 def build_continue_prompt() -> ChatPromptTemplate:
-    return ChatPromptTemplate([
-        ("system", CONTINUE_SYSTEM_PROMPT),
-        ("system", "Intent: {intent}"),
-        ("system", "Question type: {question_type}"),
-        ("system", "Knowledge scope: {knowledge_scope}"),
-        ("system", "Needs retrieval: {needs_retrieval}"),
-        ("system", "Current ReAct step count: {react_step_count}"),
-        ("system", "Latest observation: {latest_observation}"),
-        ("system", "Accumulated retrieved context: {retrieved_context}"),
-        ("user", "User question: {question}"),
-    ])
+    return ChatPromptTemplate(
+        [
+            ("system", CONTINUE_SYSTEM_PROMPT),
+            ("system", "Intent: {intent}"),
+            ("system", "Question type: {question_type}"),
+            ("system", "Knowledge scope: {knowledge_scope}"),
+            ("system", "Needs retrieval: {needs_retrieval}"),
+            ("system", "Current ReAct step count: {react_step_count}"),
+            ("system", "Latest observation: {latest_observation}"),
+            ("system", "Accumulated retrieved context: {retrieved_context}"),
+            ("user", "User question: {question}"),
+        ]
+    )
 
 
 def build_response_prompt() -> ChatPromptTemplate:
-    return ChatPromptTemplate([
-        ("system", RESPONSE_SYSTEM_PROMPT),
-        ("system", "Intent: {intent}"),
-        ("system", "Question type: {question_type}"),
-        ("system", "Knowledge scope: {knowledge_scope}"),
-        ("system", "Missing information: {missing_information}"),
-        ("system", "Retrieved context: {retrieved_context}"),
-        ("user", "User question: {question}"),
-    ])
+    return ChatPromptTemplate(
+        [
+            ("system", RESPONSE_SYSTEM_PROMPT),
+            ("system", "Intent: {intent}"),
+            ("system", "Question type: {question_type}"),
+            ("system", "Knowledge scope: {knowledge_scope}"),
+            ("system", "Missing information: {missing_information}"),
+            ("system", "Retrieved context: {retrieved_context}"),
+            ("user", "User question: {question}"),
+        ]
+    )
