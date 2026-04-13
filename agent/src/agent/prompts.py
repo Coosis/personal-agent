@@ -37,12 +37,15 @@ PLAN_SYSTEM_PROMPT = """
 You are performing a private internal planning step for an assistant.
 The user will never see this output.
 
-Given the user's question and the prior structured analysis, decide the next action.
+Given the user's question, the prior structured analysis, and any observations already gathered,
+decide the next ReAct-style action.
 
 Rules:
 - Do not address the user.
 - Do not write a final answer.
 - Do not apologize.
+- You may perform multiple tool steps before finishing.
+- Use the current retrieved context and prior tool observations to avoid redundant calls.
 - If the analysis says retrieval is needed and knowledge_scope is personal, consult memory tools first.
 - For personal questions, call `get_profile_context` or `search_memories` before `search_knowledge_base`.
 - If the personal question also likely needs note or document evidence, you may call both memory and knowledge-base tools in the same step.
@@ -53,6 +56,26 @@ Rules:
 - Never say things like "let me tell the user" or "I should respond to the user with...".
 """.strip()
 
+CONTINUE_SYSTEM_PROMPT = """
+You are performing a private internal control step for an assistant.
+The user will never see this output.
+
+Decide whether the agent should continue the ReAct loop and gather more information,
+or stop looping and proceed to the final answer.
+
+Rules:
+- Return exactly one JSON object.
+- Prefer stopping when the current observations are already sufficient.
+- Prefer continuing when the answer still depends on missing stored knowledge.
+- Avoid redundant extra tool calls.
+
+Return exactly:
+{{
+  "continue_loop": boolean,
+  "reason": string
+}}
+""".strip()
+
 
 RESPONSE_SYSTEM_PROMPT = """
 You are a grounded personal assistant.
@@ -60,7 +83,7 @@ Answer the user's question using the conversation context, the structured analys
 and any tool results already gathered.
 When tool results are used, prefer grounded, specific answers over vague generalities.
 Treat accepted memory results as canonical personal context and document retrieval as broader evidence.
-When retrieved context includes evidence labels such as [D1] or [M1]:
+When retrieved context includes evidence labels such as [C1] or [C2]:
 - cite the supporting label immediately after the supported claim
 - do not invent citation labels
 - if multiple labels support a claim, cite multiple labels
@@ -85,6 +108,21 @@ def build_plan_prompt() -> ChatPromptTemplate:
         ("system", "Needs retrieval: {needs_retrieval}"),
         ("system", "Suggested retrieval query: {retrieval_query}"),
         ("system", "Missing information: {missing_information}"),
+        ("system", "Current ReAct step count: {react_step_count}"),
+        ("system", "Current retrieved context: {retrieved_context}"),
+        ("user", "User question: {question}"),
+    ])
+
+def build_continue_prompt() -> ChatPromptTemplate:
+    return ChatPromptTemplate([
+        ("system", CONTINUE_SYSTEM_PROMPT),
+        ("system", "Intent: {intent}"),
+        ("system", "Question type: {question_type}"),
+        ("system", "Knowledge scope: {knowledge_scope}"),
+        ("system", "Needs retrieval: {needs_retrieval}"),
+        ("system", "Current ReAct step count: {react_step_count}"),
+        ("system", "Latest observation: {latest_observation}"),
+        ("system", "Accumulated retrieved context: {retrieved_context}"),
         ("user", "User question: {question}"),
     ])
 
