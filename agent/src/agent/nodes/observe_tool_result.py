@@ -3,6 +3,7 @@ from typing import cast
 
 from langchain_core.messages import ToolMessage
 
+from agent.citations import format_citation_marker, is_valid_citation_id
 from agent.state import AgentState, AgentStateUpdate
 
 
@@ -97,11 +98,14 @@ def remap_citations(
 
     for citation in citations:
         raw_id = citation.get("id")
-        if not isinstance(raw_id, str):
+        if not is_valid_citation_id(raw_id):
             continue
 
         new_id = f"C{current}"
-        remapped_context = remapped_context.replace(f"[{raw_id}]", f"[{new_id}]")
+        remapped_context = remapped_context.replace(
+            format_citation_marker(raw_id),
+            format_citation_marker(new_id),
+        )
         remapped = dict(citation)
         remapped["id"] = new_id
         remapped_citations.append(remapped)

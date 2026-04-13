@@ -142,7 +142,7 @@ def extract_memory_suggestions(
             "Content-Type": "application/json",
         },
         json={
-            "model": cfg.openrouter_model,
+            "model": cfg.memory_extraction_model,
             "temperature": 0,
             "response_format": {"type": "json_object"},
             "messages": [

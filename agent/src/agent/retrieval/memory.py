@@ -5,22 +5,29 @@ from typing import Any
 
 from langchain_core.tools import tool
 
+from agent.citations import format_citation_marker
 from agent.context import AppContext
 from agent.retrieval.payloads import encode_tool_payload
-
-# TODO! change memory fetch to use pg's full text search
-# instead of simple substring match
 
 
 def search_memories_text(app_ctx: AppContext, query: str) -> str:
     try:
-        # simple lexical search over active memories in db
-        combined: dict[int, object] = {}
-        for candidate in build_memory_queries(query):
-            results = app_ctx.db.search_memories(candidate)
-            for result in results:
-                combined[result.id] = result
-        results = list(combined.values())
+        search_queries = build_memory_search_queries(query)
+        if not search_queries:
+            return get_profile_context_text(app_ctx)
+
+        results = []
+        seen_memory_ids: set[int] = set()
+        for candidate in search_queries:
+            for result in app_ctx.db.search_memories(candidate):
+                if result.id in seen_memory_ids:
+                    continue
+                seen_memory_ids.add(result.id)
+                results.append(result)
+                if len(results) >= 8:
+                    break
+            if len(results) >= 8:
+                break
 
         # no results from search, falling back
         # to searching "user" in profile memories
@@ -91,7 +98,7 @@ def format_memory_results(results) -> tuple[str, list[dict[str, Any]]]:
 
         provenance_text = ", ".join(provenance) if provenance else "none"
         formatted.append(
-            f"[{citation_id}]\n"
+            f"{format_citation_marker(citation_id)}\n"
             f"Memory ID: {result.id}\n"
             f"Subject: {result.subject}\n"
             f"Category: {result.category}\n"
@@ -118,40 +125,31 @@ def format_memory_results(results) -> tuple[str, list[dict[str, Any]]]:
     return "\n".join(formatted), citations
 
 
-# normalize the input and generate candidate queries for memory search
-def build_memory_queries(query: str) -> list[str]:
-    # normalize whitespace
-    # e.g. "  Hello   world \n test  " -> "Hello world test"
-    normalized = " ".join(query.strip().split())
+def normalize_memory_query(query: str) -> str:
+    return " ".join(query.strip().split())
+
+
+def build_memory_search_queries(query: str) -> list[str]:
+    normalized = normalize_memory_query(query)
     if not normalized:
         return []
 
-    candidates: list[str] = [normalized]
+    candidates: list[str] = []
+    keyword_query = build_keyword_memory_query(normalized)
+    if keyword_query:
+        candidates.append(keyword_query)
+    if normalized not in candidates:
+        candidates.append(normalized)
+    return candidates
 
-    # finds keywords
-    # 1. not a stopword
-    # 2. at least 3 characters
+
+def build_keyword_memory_query(query: str) -> str:
     tokens = [
         token
-        for token in re.findall(r"[a-z0-9_]+", normalized.lower())
-        if len(token) >= 3 and token not in STOPWORDS
+        for token in re.findall(r"[a-z0-9_]+", query.lower())
+        if len(token) >= 2 and token not in STOPWORDS
     ]
-
-    # 1. concatenate keywords to form a candidate
-    # 2. take first 6 keywords individually
-    if tokens:
-        candidates.append(" ".join(tokens))
-        candidates.extend(tokens[:6])
-
-    # filter out duplicates and empty candidates while preserving order
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for candidate in candidates:
-        value = candidate.strip()
-        if value and value not in seen:
-            seen.add(value)
-            ordered.append(value)
-    return ordered
+    return " ".join(tokens)
 
 
 STOPWORDS = {
@@ -170,6 +168,8 @@ STOPWORDS = {
     "from",
     "how",
     "i",
+    "if",
+    "in",
     "is",
     "it",
     "know",
@@ -179,6 +179,7 @@ STOPWORDS = {
     "of",
     "on",
     "or",
+    "our",
     "that",
     "the",
     "thing",
@@ -186,6 +187,9 @@ STOPWORDS = {
     "to",
     "we",
     "what",
+    "which",
     "who",
+    "with",
     "you",
+    "your",
 }

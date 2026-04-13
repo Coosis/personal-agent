@@ -1,5 +1,4 @@
-import re
-
+from agent.citations import extract_citation_ids
 from langgraph.config import get_stream_writer
 
 from agent.nodes.shared import GENERATE_RESPONSE_STREAM_KEY, take_recent_history
@@ -55,7 +54,3 @@ def make_generate_response_node(model):
         }
 
     return generate_response
-
-
-def extract_citation_ids(text: str) -> set[str]:
-    return set(re.findall(r"\[([A-Z]\d+)\]", text))

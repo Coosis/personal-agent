@@ -1,4 +1,5 @@
 DROP TABLE IF EXISTS agent_runs CASCADE;
+DROP TABLE IF EXISTS conversation_summaries CASCADE;
 DROP TABLE IF EXISTS memory_suggestions CASCADE;
 DROP TABLE IF EXISTS memories CASCADE;
 DROP TABLE IF EXISTS messages CASCADE;
@@ -217,6 +218,36 @@ CREATE TABLE messages (
 CREATE INDEX idx_messages_conversation_id ON messages(conversation_id, sequence_number);
 CREATE INDEX idx_messages_status ON messages(status);
 
+CREATE TABLE conversation_summaries (
+    id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    conversation_id BIGINT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
+    summary_text TEXT NOT NULL DEFAULT '',
+    state_text TEXT NOT NULL DEFAULT '',
+    keywords TEXT[] NOT NULL DEFAULT '{}'::text[],
+    keywords_text TEXT NOT NULL DEFAULT '',
+    metadata_text TEXT NOT NULL DEFAULT '',
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL,
+    pass_index INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_conversation_summaries_last_message_id ON conversation_summaries(last_message_id);
+CREATE INDEX idx_conversation_summaries_created_at ON conversation_summaries(created_at DESC);
+CREATE INDEX idx_conversation_summaries_summary_lexical
+    ON conversation_summaries
+    USING gin (to_tsvector('simple', summary_text));
+CREATE INDEX idx_conversation_summaries_state_lexical
+    ON conversation_summaries
+    USING gin (to_tsvector('simple', state_text));
+CREATE INDEX idx_conversation_summaries_keywords_lexical
+    ON conversation_summaries
+    USING gin (to_tsvector('simple', keywords_text));
+CREATE INDEX idx_conversation_summaries_metadata_lexical
+    ON conversation_summaries
+    USING gin (to_tsvector('simple', metadata_text));
+
 CREATE TABLE memories (
     id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     subject TEXT NOT NULL,
@@ -235,6 +266,9 @@ CREATE TABLE memories (
 CREATE INDEX idx_memories_status ON memories(status);
 CREATE INDEX idx_memories_subject_category ON memories(subject, category);
 CREATE INDEX idx_memories_created_at ON memories(created_at DESC);
+CREATE INDEX idx_memories_lexical
+    ON memories
+    USING gin (to_tsvector('simple', subject || ' ' || category || ' ' || key || ' ' || value));
 
 CREATE TABLE memory_suggestions (
     id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,

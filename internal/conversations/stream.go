@@ -18,11 +18,13 @@ type streamResult struct {
 }
 
 type streamEvent struct {
-	Type           string `json:"type"`
-	Content        string `json:"content,omitempty"`
-	UserMessageID  int64  `json:"user_message_id,omitempty"`
-	AssistantMsgID int64  `json:"assistant_message_id,omitempty"`
-	Error          string `json:"error,omitempty"`
+	Type           string          `json:"type"`
+	Content        string          `json:"content,omitempty"`
+	Citations      json.RawMessage `json:"citations,omitempty"`
+	UserMessageID  int64           `json:"user_message_id,omitempty"`
+	AssistantMsgID int64           `json:"assistant_message_id,omitempty"`
+	AgentRunID     int64           `json:"agent_run_id,omitempty"`
+	Error          string          `json:"error,omitempty"`
 }
 
 type sseWriter struct {
@@ -53,12 +55,16 @@ func (w *sseWriter) write(event string, payload any) error {
 	return nil
 }
 
-func (w *sseWriter) signal(eventType string, result *SendMessageResponse, errMsg string) error {
+func (w *sseWriter) signal(eventType string, result *SendMessageResponse, info streamInfo, errMsg string) error {
 	payload := streamEvent{Type: eventType, Error: errMsg}
 	if result != nil {
 		payload.UserMessageID = result.UserMessage.ID
 		payload.AssistantMsgID = result.AssistantMessage.ID
+		if len(result.AssistantMessage.Citations) > 0 {
+			payload.Citations = json.RawMessage(result.AssistantMessage.Citations)
+		}
 	}
+	payload.AgentRunID = info.AgentRunID
 	return w.write("signal", payload)
 }
 
@@ -110,7 +116,8 @@ func (h *Handler) StreamMessage(c *gin.Context) {
 		UserMessage:      toMessage(prepared.user),
 		AssistantMessage: toMessage(prepared.assistant),
 	}
-	if err := writer.signal("start", startResponse, ""); err != nil {
+	info := streamInfo{AgentRunID: prepared.run.ID}
+	if err := writer.signal("start", startResponse, info, ""); err != nil {
 		logrus.WithError(err).Error("failed to emit start signal")
 		return
 	}
@@ -124,6 +131,7 @@ func (h *Handler) StreamMessage(c *gin.Context) {
 		assistantRow, runErr := h.service.runAssistantReplyStream(
 			c.Request.Context(),
 			prepared.assistant,
+			prepared.run,
 			req.Content,
 			prepared.history,
 			func(token string) error {
@@ -160,13 +168,13 @@ func (h *Handler) StreamMessage(c *gin.Context) {
 				AssistantMessage: result.assistant,
 			}
 			if result.err != nil {
-				if emitErr := writer.signal("failed", finalResponse, result.err.Error()); emitErr != nil {
+				if emitErr := writer.signal("failed", finalResponse, info, result.err.Error()); emitErr != nil {
 					logrus.WithError(emitErr).Error("failed to emit failed signal")
 				}
 				logrus.WithError(result.err).Error("message stream failed")
 				return
 			}
-			if err := writer.signal("stop", finalResponse, ""); err != nil {
+			if err := writer.signal("stop", finalResponse, info, ""); err != nil {
 				logrus.WithError(err).Error("failed to emit stop signal")
 			}
 			return

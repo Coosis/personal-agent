@@ -2,9 +2,12 @@ package conversations
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -29,6 +32,7 @@ type Service struct {
 type preparedMessages struct {
 	user      sqlc.Message
 	assistant sqlc.Message
+	run       sqlc.AgentRun
 	history   []agenthttp.ChatMessage
 }
 
@@ -111,7 +115,7 @@ func (s *Service) SendMessage(ctx context.Context, conversationID int64, req Sen
 	}
 
 	// streaming
-	assistantRow, err := s.runAssistantReplyStream(ctx, prepared.assistant, req.Content, prepared.history, nil)
+	assistantRow, err := s.runAssistantReplyStream(ctx, prepared.assistant, prepared.run, req.Content, prepared.history, nil)
 	response := &SendMessageResponse{
 		UserMessage:      toMessage(prepared.user),
 		AssistantMessage: toMessage(assistantRow),
@@ -196,6 +200,20 @@ func (s *Service) prepareMessages(
 			SequenceNumber:  seq + 2,
 			Metadata:        apiutil.DefaultJSONObject(),
 		})
+		if err != nil {
+			return err
+		}
+
+		prepared.run, err = q.CreateAgentRun(ctx, sqlc.CreateAgentRunParams{
+			ConversationID:   apiutil.Int8(conversationID),
+			TriggerMessageID: apiutil.Int8(prepared.user.ID),
+			Status:           "running",
+			Metadata: apiutil.MarshalJSON(map[string]any{
+				"assistant_message_id":  prepared.assistant.ID,
+				"history_message_count": len(prepared.history),
+				"request_transport":     "conversation_message",
+			}),
+		})
 		return err
 	})
 	if err != nil {
@@ -208,13 +226,16 @@ func (s *Service) prepareMessages(
 func (s *Service) runAssistantReplyStream(
 	ctx context.Context,
 	assistant sqlc.Message,
+	run sqlc.AgentRun,
 	content string,
 	history []agenthttp.ChatMessage,
 	onToken func(string) error,
 ) (sqlc.Message, error) {
+	startedAt := time.Now()
 	var builder strings.Builder
 	streamResult := agenthttp.ChatStreamResult{
 		Citations: apiutil.DefaultJSONArray(),
+		ToolsUsed: []string{},
 	}
 
 	// streaming part
@@ -225,33 +246,224 @@ func (s *Service) runAssistantReplyStream(
 		}
 		return onToken(token)
 	})
-	streamResult = result
+	if err == nil {
+		streamResult = result
+	}
 	// streaming finished, clean up phase
 
 	finalizeCtx := context.WithoutCancel(ctx)
+	finishedAt := time.Now()
+	finalStatus := "completed"
+	errorType := pgtype.Text{}
+	errorMessage := pgtype.Text{}
 	if err != nil {
-		failed, updateErr := s.db.Queries.UpdateMessageFinal(finalizeCtx, sqlc.UpdateMessageFinalParams{
-			ID:        assistant.ID,
-			Content:   builder.String(),
-			Status:    "failed",
-			Citations: apiutil.DefaultJSONArray(),
-		})
-		if updateErr != nil {
-			return assistant, fmt.Errorf("agent stream failed: %w; additionally failed to mark message failed: %v", err, updateErr)
-		}
-		return failed, err
+		finalStatus = classifyRunStatus(err)
+		errorType = apiutil.Text(classifyRunErrorType(err))
+		errorMessage = apiutil.Text(err.Error())
 	}
 
-	completed, err := s.db.Queries.UpdateMessageFinal(finalizeCtx, sqlc.UpdateMessageFinalParams{
-		ID:        assistant.ID,
-		Content:   builder.String(),
-		Status:    "completed",
-		Citations: streamResult.Citations,
-	})
+	finalMessageStatus := "completed"
 	if err != nil {
-		return assistant, err
+		finalMessageStatus = "failed"
 	}
-	return completed, nil
+
+	documentsAccessed := citationDocumentIDs(streamResult.Citations)
+	trace := buildAgentRunTrace(run, assistant, startedAt, finishedAt, streamResult, documentsAccessed, builder.Len(), err)
+	updatedMetadata := mergeJSONMetadata(run.Metadata, map[string]any{
+		"assistant_status": finalMessageStatus,
+		"citation_count":   citationCount(streamResult.Citations),
+		"response_chars":   builder.Len(),
+	})
+
+	var updated sqlc.Message
+	updateErr := s.db.WithTx(finalizeCtx, func(q *sqlc.Queries) error {
+		msg, err := q.UpdateMessageFinal(finalizeCtx, sqlc.UpdateMessageFinalParams{
+			ID:        assistant.ID,
+			Content:   builder.String(),
+			Status:    finalMessageStatus,
+			Citations: streamResult.Citations,
+		})
+		if err != nil {
+			return err
+		}
+		updated = msg
+
+		_, err = q.UpdateAgentRun(finalizeCtx, sqlc.UpdateAgentRunParams{
+			ID:                run.ID,
+			Status:            finalStatus,
+			Trace:             trace,
+			ToolsUsed:         dedupeStrings(streamResult.ToolsUsed),
+			DocumentsAccessed: documentsAccessed,
+			EndTime:           pgtype.Timestamptz{Time: finishedAt, Valid: true},
+			TotalTokens:       0,
+			TotalLatencyMs:    int32(finishedAt.Sub(startedAt).Milliseconds()),
+			StepCount:         streamResult.StepCount,
+			ErrorType:         errorType,
+			ErrorMessage:      errorMessage,
+			Metadata:          updatedMetadata,
+		})
+		if err != nil {
+			return err
+		}
+
+		if finalMessageStatus != "completed" {
+			return nil
+		}
+
+		passIndex, err := q.CountCompletedAssistantMessagesByConversation(finalizeCtx, assistant.ConversationID)
+		if err != nil {
+			return err
+		}
+		if !shouldEmitConversationSummary(passIndex) {
+			return nil
+		}
+
+		_, err = jobqueue.Enqueue(finalizeCtx, q, "summarize_conversation", map[string]any{
+			"conversation_id":    assistant.ConversationID,
+			"up_to_message_id":   assistant.ID,
+			"pass_index":         passIndex,
+			"trigger_message_id": apiutil.Int64Ptr(run.TriggerMessageID),
+			"agent_run_id":       run.ID,
+		}, jobqueue.SummarizeConversationDedupeKey(assistant.ConversationID, passIndex))
+		return err
+	})
+	if updateErr != nil {
+		if err != nil {
+			return assistant, fmt.Errorf("agent stream failed: %w; additionally failed to finalize records: %v", err, updateErr)
+		}
+		return assistant, updateErr
+	}
+
+	if err != nil {
+		return updated, err
+	}
+	return updated, nil
+}
+
+func classifyRunStatus(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "cancelled"
+	}
+	return "failed"
+}
+
+func shouldEmitConversationSummary(passIndex int32) bool {
+	return passIndex > 0 && (passIndex-1)%3 == 0
+}
+
+func classifyRunErrorType(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "context_canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline_exceeded"
+	}
+	return "agent_stream_error"
+}
+
+func dedupeStrings(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+
+	seen := make(map[string]struct{}, len(values))
+	deduped := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		deduped = append(deduped, value)
+	}
+	return deduped
+}
+
+func citationDocumentIDs(raw []byte) []int64 {
+	type citation struct {
+		DocumentID *int64 `json:"document_id"`
+	}
+
+	var payload []citation
+	if len(raw) == 0 || json.Unmarshal(raw, &payload) != nil {
+		return []int64{}
+	}
+
+	seen := map[int64]struct{}{}
+	ids := make([]int64, 0, len(payload))
+	for _, item := range payload {
+		if item.DocumentID == nil {
+			continue
+		}
+		if _, ok := seen[*item.DocumentID]; ok {
+			continue
+		}
+		seen[*item.DocumentID] = struct{}{}
+		ids = append(ids, *item.DocumentID)
+	}
+	return ids
+}
+
+func citationCount(raw []byte) int {
+	var payload []map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &payload) != nil {
+		return 0
+	}
+	return len(payload)
+}
+
+func mergeJSONMetadata(raw []byte, updates map[string]any) []byte {
+	current := map[string]any{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &current)
+	}
+	maps.Copy(current, updates)
+	return apiutil.MarshalJSON(current)
+}
+
+func buildAgentRunTrace(
+	run sqlc.AgentRun,
+	assistant sqlc.Message,
+	startedAt time.Time,
+	finishedAt time.Time,
+	result agenthttp.ChatStreamResult,
+	documentsAccessed []int64,
+	responseChars int,
+	streamErr error,
+) []byte {
+	events := []map[string]any{
+		{
+			"timestamp":            startedAt.UTC().Format(time.RFC3339Nano),
+			"phase":                "start",
+			"conversation_id":      apiutil.Int64Ptr(run.ConversationID),
+			"trigger_message_id":   apiutil.Int64Ptr(run.TriggerMessageID),
+			"assistant_message_id": assistant.ID,
+		},
+		{
+			"timestamp": finishedAt.UTC().Format(time.RFC3339Nano),
+			"phase":     "finish",
+			"status": func() string {
+				if streamErr != nil {
+					return classifyRunStatus(streamErr)
+				}
+				return "completed"
+			}(),
+			"step_count":         result.StepCount,
+			"tools_used":         dedupeStrings(result.ToolsUsed),
+			"documents_accessed": documentsAccessed,
+			"citations":          json.RawMessage(result.Citations),
+			"latency_ms":         finishedAt.Sub(startedAt).Milliseconds(),
+			"response_chars":     responseChars,
+		},
+	}
+	if streamErr != nil {
+		events[1]["error_type"] = classifyRunErrorType(streamErr)
+		events[1]["error_message"] = streamErr.Error()
+	}
+	return apiutil.MarshalJSON(events)
 }
 
 func buildAgentConversationHistory(rows []sqlc.Message) []agenthttp.ChatMessage {

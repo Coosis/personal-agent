@@ -32,12 +32,16 @@ type errorResponse struct {
 
 type ChatStreamResult struct {
 	Citations []byte
+	StepCount int32
+	ToolsUsed []string
 }
 
 type streamChunk struct {
 	Type      string          `json:"type"`
 	Content   string          `json:"content"`
 	Citations json.RawMessage `json:"citations"`
+	StepCount int32           `json:"step_count"`
+	ToolsUsed []string        `json:"tools_used"`
 }
 
 func New(baseURL string) *Client {
@@ -119,7 +123,10 @@ func (c *Client) ChatStream(
 		return ChatStreamResult{}, fmt.Errorf("agent chat failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 
-	result := ChatStreamResult{Citations: []byte("[]")}
+	result := ChatStreamResult{
+		Citations: []byte("[]"),
+		ToolsUsed: []string{},
+	}
 	err = consumeSSE(resp.Body, func(event sseEvent) error {
 		if event.Data == "" {
 			return nil
@@ -132,6 +139,10 @@ func (c *Client) ChatStream(
 
 		if chunk.Type == "stop" && len(chunk.Citations) > 0 {
 			result.Citations = []byte(chunk.Citations)
+		}
+		if chunk.Type == "stop" {
+			result.StepCount = chunk.StepCount
+			result.ToolsUsed = chunk.ToolsUsed
 			return nil
 		}
 

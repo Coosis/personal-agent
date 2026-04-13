@@ -19,6 +19,7 @@ Rules:
 - Decide whether retrieval is likely needed based on the user question and visible conversation context.
 - Use retrieval when the answer probably depends on stored knowledge rather than pure reasoning or casual chat.
 - retrieval_query should usually be a cleaned-up search query for the knowledge base.
+- For prior-chat recall, prefer short noun phrases and broad category terms over long natural-language questions.
 - Keep the output concise and factual.
 
 Return exactly one JSON object with these keys:
@@ -46,7 +47,14 @@ Rules:
 - Do not apologize.
 - You may perform multiple tool steps before finishing.
 - Use the current retrieved context and prior tool observations to avoid redundant calls.
+- If the user is asking about a prior chat, previous discussion, earlier decision, or says things like "remember what we talked about", call `search_previous_chats`.
 - If the analysis says retrieval is needed and knowledge_scope is personal, consult memory tools first.
+- For prior-chat context, prefer `search_previous_chats` before falling back to long-term memory tools.
+- If `search_previous_chats` returns no results and the user is clearly asking about an earlier discussion, retry with broader search arguments before giving up.
+- Broaden by dropping weak filler words and using shorter category-level queries. Examples:
+  - `what did we say about lunch` -> `lunch`, then `food meal`
+  - `plants discussion` -> `plants`, then `plant cactus`
+  - `database selection postgresql consideration` -> `database postgres`, then `database sql project`
 - For personal questions, call `get_profile_context` or `search_memories` before `search_knowledge_base`.
 - If the personal question also likely needs note or document evidence, you may call both memory and knowledge-base tools in the same step.
 - If the analysis says retrieval is needed and knowledge_scope is not personal, prefer calling the knowledge-base tool.
@@ -68,6 +76,7 @@ Rules:
 - Prefer stopping when the current observations are already sufficient.
 - Prefer continuing when the answer still depends on missing stored knowledge.
 - Avoid redundant extra tool calls.
+- If prior-chat retrieval returned no results for a query that may be too narrow, continue once or twice with broader search arguments instead of stopping immediately.
 
 Return exactly:
 {{
@@ -83,7 +92,8 @@ Answer the user's question using the conversation context, the structured analys
 and any tool results already gathered.
 When tool results are used, prefer grounded, specific answers over vague generalities.
 Treat accepted memory results as canonical personal context and document retrieval as broader evidence.
-When retrieved context includes evidence labels such as [C1] or [C2]:
+When retrieved context includes evidence labels such as [[cite:C1]] or [[cite:C2]]:
+- use only that exact [[cite:ID]] syntax for inline citations
 - cite the supporting label immediately after the supported claim
 - do not invent citation labels
 - if multiple labels support a claim, cite multiple labels

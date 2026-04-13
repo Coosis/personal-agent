@@ -47,6 +47,19 @@ class MemoryResult:
     message_id: int | None
 
 
+@dataclass(frozen=True)
+class ConversationSummarySearchResult:
+    id: int
+    conversation_id: int
+    summary_text: str
+    state_text: str
+    keywords: list[str]
+    metadata: object
+    last_message_id: int | None
+    pass_index: int
+    lexical_score: float = 0.0
+
+
 class AgentDB:
     def __init__(self, cfg: Config):
         self.engine = sqlalchemy.create_engine(_sqlalchemy_database_url(cfg.database_url))
@@ -186,6 +199,35 @@ class AgentDB:
             q = Querier(conn)
             rows = list(q.list_active_memories_by_subject(subject=subject, limit=limit, offset=0))
             return [to_memory_result(row) for row in rows]
+
+    def search_conversation_summaries(
+        self,
+        query: str,
+        limit: int = 5,
+    ) -> list[ConversationSummarySearchResult]:
+        with self.engine.begin() as conn:
+            q = Querier(conn)
+            rows = list(
+                q.search_conversation_summaries(
+                    query=query,
+                    summary_offset=0,
+                    summary_limit=limit,
+                )
+            )
+            return [
+                ConversationSummarySearchResult(
+                    id=row.id,
+                    conversation_id=row.conversation_id,
+                    summary_text=row.summary_text,
+                    state_text=row.state_text,
+                    keywords=row.keywords,
+                    metadata=row.metadata,
+                    last_message_id=row.last_message_id,
+                    pass_index=row.pass_index,
+                    lexical_score=row.lexical_score,
+                )
+                for row in rows
+            ]
 
 
 def _sqlalchemy_database_url(database_url: str) -> str:

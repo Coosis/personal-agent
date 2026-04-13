@@ -58,7 +58,10 @@ def _register_vector(dbapi_connection, _connection_record) -> None:
 @contextmanager
 def transaction() -> Generator[sqlalchemy.engine.Connection]:
     engine = init_engine()
+    cfg = get_config()
     with engine.begin() as conn:
+        conn.exec_driver_sql(f"SET LOCAL statement_timeout = '{cfg.db_statement_timeout_ms}ms'")
+        conn.exec_driver_sql(f"SET LOCAL lock_timeout = '{cfg.db_lock_timeout_ms}ms'")
         yield conn
 
 

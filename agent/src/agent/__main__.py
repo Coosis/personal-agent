@@ -83,7 +83,36 @@ def run_once(graph: CompiledGraph, content: str, history: list) -> Iterator[dict
             "type": "final",
             "final_answer": final_state.get("final_answer", ""),
             "citations": final_state.get("final_citations", []),
+            "step_count": int(final_state.get("react_step_count", 0)),
+            "tools_used": collect_tools_used(final_state.get("messages", [])),
         }
+
+
+def collect_tools_used(messages: object) -> list[str]:
+    if not isinstance(messages, list):
+        return []
+
+    tools_used: list[str] = []
+    seen: set[str] = set()
+    for message in messages:
+        if not isinstance(message, AIMessage):
+            continue
+        raw_tool_calls = getattr(message, "tool_calls", None) or []
+        if not isinstance(raw_tool_calls, list):
+            continue
+        for tool_call in raw_tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            name = tool_call.get("name")
+            if not isinstance(name, str):
+                continue
+            normalized = name.strip()
+            if normalized == "" or normalized in seen:
+                continue
+            seen.add(normalized)
+            tools_used.append(normalized)
+
+    return tools_used
 
 
 def create_app(cfg, app_ctx: AppContext) -> Flask:
@@ -112,6 +141,8 @@ def create_app(cfg, app_ctx: AppContext) -> Flask:
             try:
                 yield sse_event({"type": "start"}, event="signal")
                 citations: list[dict[str, Any]] = []
+                step_count = 0
+                tools_used: list[str] = []
                 for item in run_once(graph, content, history):
                     if item["type"] == "token":
                         yield sse_event(
@@ -122,7 +153,21 @@ def create_app(cfg, app_ctx: AppContext) -> Flask:
                         raw_citations = item.get("citations", [])
                         if isinstance(raw_citations, list):
                             citations = [c for c in raw_citations if isinstance(c, dict)]
-                yield sse_event({"type": "stop", "citations": citations}, event="signal")
+                        raw_step_count = item.get("step_count", 0)
+                        if isinstance(raw_step_count, int):
+                            step_count = raw_step_count
+                        raw_tools_used = item.get("tools_used", [])
+                        if isinstance(raw_tools_used, list):
+                            tools_used = [t for t in raw_tools_used if isinstance(t, str)]
+                yield sse_event(
+                    {
+                        "type": "stop",
+                        "citations": citations,
+                        "step_count": step_count,
+                        "tools_used": tools_used,
+                    },
+                    event="signal",
+                )
             except GeneratorExit:
                 # Downstream client disconnected while streaming.
                 return

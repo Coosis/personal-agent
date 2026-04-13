@@ -41,6 +41,10 @@ type SendMessageResponse struct {
 	AssistantMessage Message `json:"assistant_message"`
 }
 
+type streamInfo struct {
+	AgentRunID int64 `json:"agent_run_id"`
+}
+
 type ListRequest struct {
 	Limit  int32 `form:"limit,default=20"`
 	Offset int32 `form:"offset,default=0"`

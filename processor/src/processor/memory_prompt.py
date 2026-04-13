@@ -22,7 +22,9 @@ Return JSON only with this shape:
 
 Rules:
 - Extract only durable, user-centric facts.
-- Prefer fewer high-quality suggestions.
+- If the input contains multiple durable facts, extract each of them as separate suggestions.
+- Prefer high-quality suggestions, but do not stop after the first one.
+- Favor recall for clearly supported durable facts over being overly sparse.
 - Prefer canonical keys when they clearly fit the fact. Examples: university, field_of_study, current_city, status, notable_event, past_project, known_person, liked_language.
 - Ignore transient chatter, one-off scheduling details, speculative claims, and weak inferences.
 - Suggestions are proposals, not truth.

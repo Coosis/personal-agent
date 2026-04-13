@@ -564,6 +564,13 @@ SET title = $2,
 WHERE id = $1
 RETURNING *;
 
+-- name: UpdateConversationSummary :one
+UPDATE conversations
+SET summary = @summary,
+    updated_at = NOW()
+WHERE id = @id
+RETURNING *;
+
 -- name: DeleteConversation :one
 DELETE FROM conversations
 WHERE id = $1
@@ -624,15 +631,101 @@ WHERE conversation_id = $1
   AND status = 'completed'
 ORDER BY sequence_number;
 
+-- name: ListCompletedMessagesByConversationRange :many
+SELECT *
+FROM messages
+WHERE conversation_id = @conversation_id
+  AND status = 'completed'
+  AND id > @after_message_id
+  AND id <= @up_to_message_id
+ORDER BY sequence_number;
+
 -- name: GetLatestMessageSequence :one
 SELECT COALESCE(MAX(sequence_number), 0)::int4
 FROM messages
 WHERE conversation_id = $1;
 
+-- name: CountCompletedAssistantMessagesByConversation :one
+SELECT COUNT(*)::int4
+FROM messages
+WHERE conversation_id = $1
+  AND role = 'assistant'
+  AND status = 'completed';
+
 -- name: GetMessageByID :one
 SELECT *
 FROM messages
 WHERE id = $1;
+
+-- Conversation Summaries
+-- name: UpsertConversationSummary :one
+INSERT INTO conversation_summaries (
+    conversation_id,
+    summary_text,
+    state_text,
+    keywords,
+    keywords_text,
+    metadata_text,
+    metadata,
+    last_message_id,
+    pass_index
+) VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8,
+    $9
+)
+ON CONFLICT (conversation_id) DO UPDATE
+SET summary_text = EXCLUDED.summary_text,
+    state_text = EXCLUDED.state_text,
+    keywords = EXCLUDED.keywords,
+    keywords_text = EXCLUDED.keywords_text,
+    metadata_text = EXCLUDED.metadata_text,
+    metadata = EXCLUDED.metadata,
+    last_message_id = EXCLUDED.last_message_id,
+    pass_index = EXCLUDED.pass_index,
+    updated_at = NOW()
+RETURNING *;
+
+-- name: GetConversationSummaryByConversationID :one
+SELECT *
+FROM conversation_summaries
+WHERE conversation_id = $1;
+
+-- name: SearchConversationSummaries :many
+WITH search_query AS (
+    SELECT
+        CASE
+            WHEN @query::text = '' THEN NULL::tsquery
+            ELSE websearch_to_tsquery('simple', @query)
+        END AS tsq
+)
+SELECT cs.*,
+    CASE
+        WHEN sq.tsq IS NULL THEN 0::float8
+        ELSE (
+            4.0 * ts_rank_cd(to_tsvector('simple', cs.summary_text), sq.tsq)
+            + 2.5 * ts_rank_cd(to_tsvector('simple', cs.keywords_text), sq.tsq)
+            + 2.0 * ts_rank_cd(to_tsvector('simple', cs.metadata_text), sq.tsq)
+            + 1.5 * ts_rank_cd(to_tsvector('simple', cs.state_text), sq.tsq)
+        )::float8
+    END AS lexical_score
+FROM conversation_summaries AS cs
+CROSS JOIN search_query AS sq
+WHERE (
+    sq.tsq IS NULL
+    OR to_tsvector('simple', cs.summary_text) @@ sq.tsq
+    OR to_tsvector('simple', cs.keywords_text) @@ sq.tsq
+    OR to_tsvector('simple', cs.metadata_text) @@ sq.tsq
+    OR to_tsvector('simple', cs.state_text) @@ sq.tsq
+)
+ORDER BY lexical_score DESC, cs.updated_at DESC, cs.id DESC
+LIMIT @summary_limit OFFSET @summary_offset;
 
 -- Memories
 -- name: CreateMemory :one
@@ -661,7 +754,11 @@ INSERT INTO memories (
 -- name: ListMemories :many
 SELECT *
 FROM memories
-WHERE (@query::text = '' OR subject ILIKE '%' || @query || '%' OR category ILIKE '%' || @query || '%' OR key ILIKE '%' || @query || '%' OR value ILIKE '%' || @query || '%')
+WHERE (
+    @query::text = ''
+    OR to_tsvector('simple', subject || ' ' || category || ' ' || key || ' ' || value)
+        @@ websearch_to_tsquery('simple', @query)
+)
   AND (
     (@status::text <> '' AND status = @status)
     OR (
@@ -670,7 +767,16 @@ WHERE (@query::text = '' OR subject ILIKE '%' || @query || '%' OR category ILIKE
       AND (@include_deleted::bool OR status <> 'deleted')
     )
   )
-ORDER BY updated_at DESC, id DESC
+ORDER BY
+    CASE
+        WHEN @query::text = '' THEN 0::float4
+        ELSE ts_rank_cd(
+            to_tsvector('simple', subject || ' ' || category || ' ' || key || ' ' || value),
+            websearch_to_tsquery('simple', @query)
+        )
+    END DESC,
+    updated_at DESC,
+    id DESC
 LIMIT @memory_limit OFFSET @memory_offset;
 
 -- name: GetMemoryByID :one
@@ -725,8 +831,21 @@ LIMIT 1;
 SELECT *
 FROM memories
 WHERE status = 'active'
-  AND (@query::text = '' OR subject ILIKE '%' || @query || '%' OR category ILIKE '%' || @query || '%' OR key ILIKE '%' || @query || '%' OR value ILIKE '%' || @query || '%')
-ORDER BY updated_at DESC, id DESC
+  AND (
+    @query::text = ''
+    OR to_tsvector('simple', subject || ' ' || category || ' ' || key || ' ' || value)
+        @@ websearch_to_tsquery('simple', @query)
+  )
+ORDER BY
+    CASE
+        WHEN @query::text = '' THEN 0::float4
+        ELSE ts_rank_cd(
+            to_tsvector('simple', subject || ' ' || category || ' ' || key || ' ' || value),
+            websearch_to_tsquery('simple', @query)
+        )
+    END DESC,
+    updated_at DESC,
+    id DESC
 LIMIT @memory_limit OFFSET @memory_offset;
 
 -- name: ListActiveMemoriesBySubject :many

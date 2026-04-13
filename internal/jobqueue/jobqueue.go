@@ -72,6 +72,10 @@ func ExtractMemorySuggestionsFromMessageDedupeKey(messageID int64) string {
 	return fmt.Sprintf("extract_memory_suggestions:message:%d", messageID)
 }
 
+func SummarizeConversationDedupeKey(conversationID int64, passIndex int32) string {
+	return fmt.Sprintf("summarize_conversation:%d:%d", conversationID, passIndex)
+}
+
 func nullableText(s string) pgtype.Text {
 	if s == "" {
 		return pgtype.Text{Valid: false}

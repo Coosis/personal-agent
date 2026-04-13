@@ -4,6 +4,7 @@ from typing import Any
 
 from langchain_core.tools import tool
 
+from agent.citations import format_citation_marker
 from agent.context import AppContext
 from agent.retrieval.payloads import encode_tool_payload
 
@@ -21,7 +22,7 @@ def format_search_results(results) -> tuple[str, list[dict[str, Any]]]:
             or result.document_title
         )
         formatted_results.append(
-            f"[{citation_id}]\n"
+            f"{format_citation_marker(citation_id)}\n"
             f"Document: {result.document_title}\n"
             f"Source: {source_ref}\n"
             f"Content: {result.content}\n"

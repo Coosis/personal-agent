@@ -703,7 +703,8 @@ Primary tasks:
 ### 12.2 Agent Tools
 
 - Current v1 tools in the repo:
-  - `get_personal_information`
+  - `get_profile_context`
+  - `search_memories`
   - `search_knowledge_base`
 - Reserved/planned tools:
   - `get_document`
@@ -727,28 +728,116 @@ The agent should:
 Current implemented graph direction:
 
 1. `analyze_request`
-2. `plan_response`
-3. optional tool loop
-4. `normalize_tool_result`
-5. `generate_response`
-6. `commit_agent_response`
+2. `decide_next_action`
+3. optional `call_tool`
+4. `observe_tool_result`
+5. `decide_whether_continue`
+6. `generate_response`
+7. `commit_agent_response`
 
 Current state split:
 
 - `conversation_messages`: user-visible prior turns
 - `messages`: internal tool-loop scratchpad used by LangGraph tool routing
-- `input_analysis`
-- `plan_decision`
+- `intent` / `question_type` / `knowledge_scope`
+- `retrieval_query` / `missing_information`
 - `retrieved_context`
+- `retrieved_citations`
+- `latest_observation`
+- `react_step_count`
 - `final_answer`
 
 ### 12.5 Important Remaining Gaps
 
-- Go currently sends only the current user message to the Python agent; prior conversation history is stored in the database but not yet replayed into the agent state
 - `retrieved_context` normalization is still simple and should evolve into explicit evidence blocks with citations
-- personal information is still stubbed in code and should be moved to database-backed retrieval
+- `agent_runs` exists in schema and has read endpoints, but the conversation execution path still does not create or update run rows
+- assistant `messages` still do not persist `tool_calls`, `tool_results`, `token_count`, `latency_ms`, or `model`
 - compare/summarize/extract workflows are still planned, not implemented
 - LangSmith tracing is useful for debugging, but the project should not depend on trace-only metadata for runtime behavior
+
+### 12.6 Agent Run Persistence Plan
+
+Current state after code inspection:
+
+- `internal/conversations/service.go` owns the real assistant lifecycle:
+  - create user message
+  - create placeholder assistant message with `status = 'streaming'`
+  - call the Python agent over SSE
+  - finalize the assistant row as `completed` or `failed`
+- `internal/agentruns` only exposes read APIs over `agent_runs`
+- the Python agent currently streams only token chunks plus final citations
+- as a result, `agent_runs.trace`, `tools_used`, `documents_accessed`, `step_count`, `total_latency_ms`, and most message observability fields are never populated
+
+Plan:
+
+1. Make the Go conversation service the owner of run lifecycle.
+   - Create one `agent_runs` row in the same transaction that creates the user message and placeholder assistant message.
+   - Set `conversation_id`, `trigger_message_id`, `status = 'running'`, and seed `metadata` with `assistant_message_id`, transport mode, and model configuration.
+   - Treat each assistant attempt as a distinct run. Retries should create a new row, not overwrite a previous failed run.
+
+2. Pass run identity through the Go-to-Python agent contract.
+   - Extend the `/v1/stream` request payload with `agent_run_id`, `conversation_id`, `trigger_message_id`, and `assistant_message_id`.
+   - The Python agent should treat these values as correlation identifiers for emitted trace events and any future direct persistence.
+
+3. Emit structured trace events from the Python agent instead of only final citations.
+   - Add SSE event payloads for node start/finish, tool call, tool result observation, final usage summary, and terminal status.
+   - Trace nodes should map to the real graph names:
+     - `analyze_request`
+     - `decide_next_action`
+     - `call_tool`
+     - `observe_tool_result`
+     - `decide_whether_continue`
+     - `generate_response`
+     - `commit_agent_response`
+
+4. Persist agent-run data in Go while consuming the stream.
+   - Accumulate structured trace events and write them back into `agent_runs.trace`.
+   - Populate:
+     - `tools_used` from actual invoked tool names
+     - `documents_accessed` from cited retrieval results with `document_id`
+     - `step_count` from completed tool-loop iterations
+     - `total_latency_ms` from request start/end
+     - `total_tokens` when the model/provider returns usage data
+   - On success mark the row `completed` and set `end_time`.
+   - On upstream failure mark the row `failed`.
+   - On client disconnect or explicit cancellation, persist partial trace and mark the row `cancelled` when cancellation is the primary cause.
+
+5. Use the same stream summary to finalize the assistant `messages` row properly.
+   - Extend the message finalization query so the assistant row stores:
+     - `citations`
+     - `tool_calls`
+     - `tool_results`
+     - `token_count`
+     - `latency_ms`
+     - `model`
+     - any minimal run linkage in `metadata`
+   - This keeps `messages` as the user-facing summary and `agent_runs` as the full execution trace.
+
+6. Define a stable `agent_runs.trace` schema.
+   - Store an ordered JSON array of small event objects such as:
+     - `timestamp`
+     - `phase`
+     - `node`
+     - `tool_name`
+     - `tool_call_id`
+     - `input_summary`
+     - `output_summary`
+     - `citations`
+     - `document_ids`
+     - `latency_ms`
+     - `error`
+   - Keep large retrieved context out of the trace body when possible; store summaries plus IDs/citations so traces remain inspectable without becoming a second blob store.
+
+7. Tighten the read model around runs.
+   - Add filtering for `conversation_id`, `status`, and `trigger_message_id` to the list endpoint.
+   - Add a conversation-scoped view or query so the UI can show runs alongside messages.
+   - Consider promoting `assistant_message_id` from `metadata` to a first-class column if querying by assistant reply becomes common.
+
+8. Roll out in this order.
+   - Phase A: create/finalize `agent_runs` rows with status, latency, and basic metadata
+   - Phase B: capture tool names, cited documents, and message observability fields
+   - Phase C: persist per-step trace events and expose richer run inspection in the API/CLI
+   - Phase D: add tests for success, tool failure, agent failure, and client-cancel paths
 
 ---
 
@@ -1026,6 +1115,37 @@ Assistant reply lifecycle:
 - on failure, update the same row to the accumulated partial content and `status = 'failed'`
 
 This keeps the database as the source of truth even when the HTTP client is observing streamed output.
+
+#### `agent_runs`
+
+Stores one agent execution attempt for one user-triggered assistant reply.
+
+Fields:
+
+- `id`
+- `conversation_id`
+- `trigger_message_id`
+- `status` (`running`, `completed`, `failed`, `cancelled`)
+- `trace`
+- `tools_used`
+- `documents_accessed`
+- `start_time`
+- `end_time`
+- `total_tokens`
+- `total_latency_ms`
+- `step_count`
+- `error_type`
+- `error_message`
+- `metadata`
+- `created_at`
+
+Intended behavior:
+
+- create the row before the agent request starts, in the same transaction that creates the trigger user message and placeholder assistant message
+- keep the row updated as the agent stream progresses, not only after completion
+- use `metadata` for stable correlation data such as `assistant_message_id`, request transport, and model identifier
+- on success, store the final trace summary, tools used, cited document IDs, latency, and completion timestamp
+- on failure or cancellation, preserve the partial trace and terminal error details for inspection
 
 ---
 

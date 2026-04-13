@@ -15,6 +15,9 @@ DEFAULT_CHUNK_SIZE = 512
 DEFAULT_CHUNK_OVERLAP = 50
 DEFAULT_OPENROUTER_MODEL = "qwen/qwen-2.5-72b-instruct"
 DEFAULT_OPENROUTER_API_URL = "https://openrouter.ai/api/v1"
+DEFAULT_MEMORY_EXTRACTION_MODEL = DEFAULT_OPENROUTER_MODEL
+DEFAULT_DB_STATEMENT_TIMEOUT_MS = 45000
+DEFAULT_DB_LOCK_TIMEOUT_MS = 5000
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,9 @@ class Config:
     openrouter_api_key: str = ""
     openrouter_model: str = DEFAULT_OPENROUTER_MODEL
     openrouter_api_url: str = DEFAULT_OPENROUTER_API_URL
+    memory_extraction_model: str = DEFAULT_MEMORY_EXTRACTION_MODEL
+    db_statement_timeout_ms: int = DEFAULT_DB_STATEMENT_TIMEOUT_MS
+    db_lock_timeout_ms: int = DEFAULT_DB_LOCK_TIMEOUT_MS
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     chunk_size: int = DEFAULT_CHUNK_SIZE
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
@@ -39,6 +45,12 @@ def validate_config(cfg: Config) -> None:
         raise ValueError("DATABASE_URL environment variable is required")
     if not cfg.alibaba_api_key:
         raise ValueError("ALIBABA_API_KEY environment variable is required")
+    if not cfg.memory_extraction_model:
+        raise ValueError("MEMORY_EXTRACTION_MODEL cannot be empty")
+    if cfg.db_statement_timeout_ms <= 0:
+        raise ValueError("DB_STATEMENT_TIMEOUT_MS must be positive")
+    if cfg.db_lock_timeout_ms <= 0:
+        raise ValueError("DB_LOCK_TIMEOUT_MS must be positive")
     if cfg.lease_duration_seconds <= 0:
         raise ValueError("LEASE_DURATION_SECONDS must be positive")
     if cfg.heartbeat_interval_seconds <= 0:
@@ -76,6 +88,14 @@ def get_config() -> Config:
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
         openrouter_model=os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL),
         openrouter_api_url=os.getenv("OPENROUTER_API_URL", DEFAULT_OPENROUTER_API_URL),
+        memory_extraction_model=os.getenv(
+            "MEMORY_EXTRACTION_MODEL",
+            os.getenv("OPENROUTER_MODEL", DEFAULT_MEMORY_EXTRACTION_MODEL),
+        ),
+        db_statement_timeout_ms=int(
+            os.getenv("DB_STATEMENT_TIMEOUT_MS", DEFAULT_DB_STATEMENT_TIMEOUT_MS)
+        ),
+        db_lock_timeout_ms=int(os.getenv("DB_LOCK_TIMEOUT_MS", DEFAULT_DB_LOCK_TIMEOUT_MS)),
         poll_interval_seconds=int(
             os.getenv("POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS)
         ),

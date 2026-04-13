@@ -11,3 +11,4 @@ difficulties.txt
 apictl
 server
 chat
+.ruff_cache

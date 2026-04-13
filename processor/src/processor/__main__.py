@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import threading
 import time
 import uuid
 
 from processor.config import Config, get_config
+from processor.conversation_summary import process_summarize_conversation
 from processor.db import (
     close_engine,
     init_engine,
@@ -34,6 +36,7 @@ REINDEX_JOB_TYPE = "reindex_document"
 SCAN_JOB_TYPE = "scan_source"
 PURGE_JOB_TYPE = "purge_source_content"
 MEMORY_EXTRACTION_JOB_TYPE = "extract_memory_suggestions"
+SUMMARIZE_CONVERSATION_JOB_TYPE = "summarize_conversation"
 
 WORKER_ID = str(uuid.uuid4())[:8]
 
@@ -77,6 +80,9 @@ def process_job(cfg: Config, shutdown_event: threading.Event, job: models.Job) -
         elif job.type == MEMORY_EXTRACTION_JOB_TYPE:
             heartbeat.ensure_active()
             process_extract_memory_suggestions(cfg, heartbeat, job)
+        elif job.type == SUMMARIZE_CONVERSATION_JOB_TYPE:
+            heartbeat.ensure_active()
+            process_summarize_conversation(cfg, heartbeat, job)
         else:
             raise PermanentJobError(f"unsupported job type {job.type}")
 
@@ -116,9 +122,15 @@ def claim_next_job(cfg: Config) -> models.Job | None:
 def main() -> None:
     cfg = get_config()
     shutdown_event = threading.Event()
+    signal_count = 0
     init_engine()
 
     def handle_signal(signum, _frame) -> None:
+        nonlocal signal_count
+        signal_count += 1
+        if signal_count >= 2:
+            logger.warning("received signal %s again, forcing immediate shutdown", signum)
+            os._exit(128 + int(signum))
         logger.info("received signal %s, shutting down after current job", signum)
         shutdown_event.set()
 
