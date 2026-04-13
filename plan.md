@@ -1325,7 +1325,405 @@ Built a local-first personal knowledge base agent that ingests notes, files, upl
 
 ---
 
-## 22. Future Extensions
+## 22. Memory Layer
+
+### 22.1 Purpose and Role
+
+Memory is a second retrieval layer above document knowledge.
+
+Its job is to store a **small set of stable, user-centric, canonical facts** that help the agent answer personal questions efficiently and consistently.
+
+Examples:
+
+- profile facts
+- preferences
+- relationships
+- ongoing projects
+- durable constraints or routines
+
+Memory is **not** just another chunk store.
+It exists so the system does not have to repeatedly rediscover the same stable user context from raw notes, conversations, and files.
+
+### 22.2 Knowledge Retrieval vs Memory
+
+The system now has two distinct knowledge surfaces:
+
+#### A. Document Knowledge
+
+Backed by:
+
+- `sources`
+- `source_items`
+- `documents`
+- `index_builds`
+- `chunks`
+
+Use it for:
+
+- broad semantic retrieval
+- citations
+- document-grounded answers
+- summarization and synthesis over source material
+
+Properties:
+
+- larger
+- derived from document content
+- optimized for recall and evidence retrieval
+- grounded through chunk citations
+
+#### B. Memory
+
+Backed by:
+
+- `memories`
+- `memory_suggestions`
+
+Use it for:
+
+- personal/profile questions
+- durable preferences
+- user-specific context the agent should remember explicitly
+
+Properties:
+
+- much smaller
+- canonical rather than exhaustive
+- user-centric rather than document-centric
+- curated through review before activation
+
+Important boundary:
+
+- chunks remain the retrieval substrate for documents
+- memories are standalone records and must not be materialized as chunks in v1
+
+### 22.3 Canonical Memories vs Suggestions
+
+The memory layer has two states of fact:
+
+#### `memory_suggestions`
+
+Candidate facts extracted from user-authored content.
+
+Properties:
+
+- produced by an extractor
+- stored with provenance and evidence
+- **not trusted as truth**
+- reviewable and reversible
+- lifecycle: `pending`, `accepted`, `rejected`, `expired`
+
+#### `memories`
+
+Canonical memory records that the agent may rely on directly.
+
+Properties:
+
+- created manually or by accepting a suggestion
+- lifecycle: `active`, `archived`, `deleted`
+- meant to be concise and durable
+- should favor one stable fact per row
+
+Acceptance rule:
+
+- no extractor may auto-promote a suggestion into canonical memory in v1
+- only explicit user acceptance creates or updates an active memory
+
+### 22.4 Canonical Memory Shape
+
+Memory should stay intentionally small and lightweight.
+
+Recommended fields for `memories`:
+
+- `id`
+- `subject`
+- `category`
+- `key`
+- `value`
+- `status`
+- `confidence`
+- `source_id`
+- `document_id`
+- `message_id`
+- `created_at`
+- `updated_at`
+
+Recommended fields for `memory_suggestions`:
+
+- `id`
+- `subject`
+- `category`
+- `key`
+- `value`
+- `confidence`
+- `status`
+- `extractor_type`
+- `source_id`
+- `document_id`
+- `message_id`
+- `evidence_text`
+- `created_at`
+- `updated_at`
+
+Design rules:
+
+- avoid a large ontology
+- avoid graph edges in v1
+- avoid automated conflict resolution in v1
+- prefer explicit status transitions and simple CRUD
+
+### 22.5 Provenance Model
+
+Every memory suggestion and canonical memory should preserve lightweight provenance.
+
+V1 provenance fields:
+
+- `source_id` when the fact came from a source-backed note or upload context
+- `document_id` when the fact came from a document-owned note
+- `message_id` when the fact came from a conversation message
+- `evidence_text` on suggestions for short human-reviewable justification
+
+Provenance requirements:
+
+- provenance explains where the candidate came from
+- provenance does not by itself make the fact canonical
+- accepted memory should retain origin references from the accepted suggestion when available
+
+### 22.6 Canonical Memory Merge Policies
+
+Canonical memory uses per-key merge behavior determined by `(category, key)`.
+
+V1 implementation choice:
+
+- use a small application-level policy map
+- do **not** introduce a registry table in v1
+- the server, not the LLM, decides whether a key is replace-style or append-style
+
+#### Replace-Style Keys
+
+These keys should normally have one active canonical value per `(subject, category, key)`.
+
+Acceptance rule:
+
+- on accept, archive existing active memories for the same `(subject, category, key)`
+- then insert the accepted value as the new active memory
+
+Examples:
+
+- `profile.university`
+- `profile.field_of_study`
+- `profile.current_city`
+- `project.status`
+
+Typical meaning:
+
+- current university
+- current field of study
+- current city
+- current project status
+
+#### Append-Style Keys
+
+These keys may legitimately have multiple active canonical values.
+
+Acceptance rule:
+
+- on accept, insert a new active memory
+- do not archive existing active memories for the same `(subject, category, key)`
+
+Examples:
+
+- `event.notable_event`
+- `project.past_project`
+- `relationship.known_person`
+- `preference.liked_language`
+
+Typical meaning:
+
+- notable life or work events
+- multiple prior projects
+- multiple known people
+- multiple liked languages
+
+#### Initial V1 Canonical Key Policy List
+
+The initial application-level policy map should include:
+
+- replace: `profile.university`
+- replace: `profile.field_of_study`
+- replace: `profile.current_city`
+- replace: `project.status`
+- append: `event.notable_event`
+- append: `project.past_project`
+- append: `relationship.known_person`
+- append: `preference.liked_language`
+
+Recommended default for unknown keys in v1:
+
+- treat them as append-style to avoid destructive overwrites from under-specified extraction
+
+### 22.7 Extraction and Job Flow
+
+V1 memory extraction is asynchronous and suggestion-first.
+
+Supported triggers:
+
+- new user message persisted in `messages`
+- note created
+- note updated
+
+Not in scope for v1:
+
+- full historical backfill
+- uploads/files/directory corpus extraction
+- automatic re-extraction across the entire corpus
+
+Recommended flow:
+
+1. A triggering item is persisted.
+2. Go enqueues `extract_memory_suggestions`.
+3. The processor claims the job through the existing lease-based queue.
+4. The worker loads the relevant note or message payload.
+5. The worker calls an LLM with a structured extraction prompt.
+6. The worker parses strict JSON output.
+7. The worker inserts `memory_suggestions` rows with `status = 'pending'`.
+8. Review APIs expose pending suggestions for explicit accept/reject.
+
+Job properties:
+
+- dedupe by trigger target, for example `extract_memory_suggestions:message:{id}` or `extract_memory_suggestions:note:{id}`
+- idempotent insert behavior should prevent accidental duplicate pending suggestions for the same trigger/evidence pair
+- failures follow the existing retryable/permanent job model
+
+### 22.8 Extraction Prompt Contract
+
+The memory extractor should use an LLM-first structured prompt.
+
+Prompt rules:
+
+- extract only durable user-centric facts
+- prefer canonical keys when the fact fits a known key
+- ignore transient status chatter and weak speculation
+- prefer fewer high-quality candidates over broad recall
+- output JSON only
+- include `subject`, `category`, `key`, `value`, `confidence`, and short `evidence_text`
+- do not decide replace-vs-append behavior
+- merge behavior must be determined server-side from the `(category, key)` policy map
+- never mark a suggestion as accepted
+
+### 22.9 Suggestion Acceptance Flow
+
+When a suggestion is accepted:
+
+1. Determine merge behavior from `(category, key)`.
+2. If the key is replace-style:
+   - archive existing active memories for the same `(subject, category, key)`
+   - insert the accepted value as the new active memory
+3. If the key is append-style:
+   - insert a new active memory
+   - leave existing active memories for that key untouched
+4. Preserve provenance from the accepted suggestion on the new canonical memory row.
+
+If an identical active memory already exists:
+
+- v1 may treat acceptance as a no-op canonical insert and simply mark the suggestion accepted
+
+### 22.10 Agent Retrieval Order
+
+The agent should choose retrieval order based on question type.
+
+For personal/profile/preference/relationship questions:
+
+1. search active memories first
+2. if memory is insufficient, fall back to document retrieval
+3. answer with clear grounding, using memory as canonical context and documents as supporting evidence when needed
+
+For document/content questions:
+
+1. use normal chunk retrieval first
+2. consult memory only when it adds user-specific context that changes interpretation
+
+Implementation intent:
+
+- memory lookup is a distinct tool or helper, not a hidden chunk search
+- a helper such as `get_profile_context` may aggregate the most relevant active memories into a compact prompt block
+
+### 22.11 Memory API Design
+
+Memory requires both CRUD and review endpoints.
+
+#### Memories
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `POST` | `/api/v1/memories` | Create canonical memory |
+| `GET` | `/api/v1/memories` | List memories |
+| `GET` | `/api/v1/memories/{id}` | Get memory |
+| `PUT` | `/api/v1/memories/{id}` | Update memory |
+| `DELETE` | `/api/v1/memories/{id}` | Soft delete memory |
+| `POST` | `/api/v1/memories/{id}/archive` | Archive memory |
+
+#### Memory Suggestions
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/api/v1/memory-suggestions` | List suggestions, typically filtered to pending |
+| `GET` | `/api/v1/memory-suggestions/{id}` | Get suggestion |
+| `POST` | `/api/v1/memory-suggestions/{id}/accept` | Accept suggestion into canonical memory |
+| `POST` | `/api/v1/memory-suggestions/{id}/reject` | Reject suggestion |
+
+### 22.12 Phased Memory Implementation Plan
+
+#### Phase M1 - Core Data Model
+
+Deliverables:
+
+- schema for `memories` and `memory_suggestions`
+- sqlc queries and models
+- Go CRUD/read services for both resources
+- explicit accept/reject status transitions
+
+#### Phase M2 - Suggestion Extraction
+
+Deliverables:
+
+- new `extract_memory_suggestions` job type
+- enqueue from note create/update and user message persistence
+- structured LLM extraction prompt and parser
+- pending suggestion storage with provenance
+
+#### Phase M3 - Agent Integration
+
+Deliverables:
+
+- `search_memories` retrieval helper
+- optional `get_profile_context`
+- memory-first behavior for personal questions
+- fallback to chunk retrieval when memory is missing or insufficient
+
+#### Phase M4 - Trust and Operations
+
+Deliverables:
+
+- application-level canonical key policy map
+- replace-vs-append acceptance semantics
+- duplicate suppression and conflict visibility improvements
+- suggestion expiration policy
+- review UX improvements
+- lightweight evaluation of memory usefulness and extraction precision
+
+### 22.13 Explicit Deferrals
+
+The following are intentionally deferred from v1:
+
+- treating memories as chunks
+- auto-accepting extracted suggestions
+- graph/ontology expansion
+- reranking memory results
+- full conflict resolution between competing facts
+- corpus-wide historical extraction
+
+## 23. Future Extensions
 
 Possible v2 features:
 
@@ -1336,3 +1734,5 @@ Possible v2 features:
 - saved queries and workflows
 - retrieval evaluation harness
 - optional watcher as a hint-only optimization that triggers scans, never as source of truth
+- memory conflict review and merge assistance
+- historical backfill for memory suggestions

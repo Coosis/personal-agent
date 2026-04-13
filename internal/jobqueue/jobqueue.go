@@ -64,6 +64,14 @@ func PurgeSourceContentDedupeKey(sourceID int64) string {
 	return fmt.Sprintf("purge_source_content:%d", sourceID)
 }
 
+func ExtractMemorySuggestionsFromNoteDedupeKey(noteID int64) string {
+	return fmt.Sprintf("extract_memory_suggestions:note:%d", noteID)
+}
+
+func ExtractMemorySuggestionsFromMessageDedupeKey(messageID int64) string {
+	return fmt.Sprintf("extract_memory_suggestions:message:%d", messageID)
+}
+
 func nullableText(s string) pgtype.Text {
 	if s == "" {
 		return pgtype.Text{Valid: false}

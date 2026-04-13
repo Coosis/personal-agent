@@ -33,6 +33,20 @@ class SearchChunkResult:
     combined_score: float = 0.0
 
 
+@dataclass(frozen=True)
+class MemoryResult:
+    id: int
+    subject: str
+    category: str
+    key: str
+    value: str
+    status: str
+    confidence: float
+    source_id: int | None
+    document_id: int | None
+    message_id: int | None
+
+
 class AgentDB:
     def __init__(self, cfg: Config):
         self.engine = sqlalchemy.create_engine(_sqlalchemy_database_url(cfg.database_url))
@@ -138,6 +152,26 @@ class AgentDB:
             results.sort(key=lambda item: (item.vector_score, item.chunk_id), reverse=True)
             return results
 
+    def search_memories(
+        self,
+        query: str,
+        limit: int = 8,
+    ) -> List[MemoryResult]:
+        with self.engine.begin() as conn:
+            q = Querier(conn)
+            rows = list(q.search_active_memories(query=query, memory_offset=0, memory_limit=limit))
+            return [to_memory_result(row) for row in rows]
+
+    def get_profile_memories(
+        self,
+        subject: str = "user",
+        limit: int = 12,
+    ) -> List[MemoryResult]:
+        with self.engine.begin() as conn:
+            q = Querier(conn)
+            rows = list(q.list_active_memories_by_subject(subject=subject, limit=limit, offset=0))
+            return [to_memory_result(row) for row in rows]
+
 
 def _sqlalchemy_database_url(database_url: str) -> str:
     if database_url.startswith("postgresql+psycopg://"):
@@ -147,3 +181,18 @@ def _sqlalchemy_database_url(database_url: str) -> str:
     if database_url.startswith("postgres://"):
         return "postgresql+psycopg://" + database_url[len("postgres://"):]
     return database_url
+
+
+def to_memory_result(row) -> MemoryResult:
+    return MemoryResult(
+        id=row.id,
+        subject=row.subject,
+        category=row.category,
+        key=row.key,
+        value=row.value,
+        status=row.status,
+        confidence=row.confidence,
+        source_id=row.source_id,
+        document_id=row.document_id,
+        message_id=row.message_id,
+    )

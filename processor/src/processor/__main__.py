@@ -17,6 +17,7 @@ from processor.db import (
     transaction,
 )
 from processor.heartbeat import Heartbeat
+from processor.memory import process_extract_memory_suggestions
 from processor.reindex import process_reindex_document
 from processor.scan import process_scan_source
 from processor.runtime import PermanentJobError, coerce_int, ensure_mapping
@@ -32,6 +33,7 @@ CHUNKER_VERSION = "chunker:v1"
 REINDEX_JOB_TYPE = "reindex_document"
 SCAN_JOB_TYPE = "scan_source"
 PURGE_JOB_TYPE = "purge_source_content"
+MEMORY_EXTRACTION_JOB_TYPE = "extract_memory_suggestions"
 
 WORKER_ID = str(uuid.uuid4())[:8]
 
@@ -63,6 +65,9 @@ def process_job(cfg: Config, shutdown_event: threading.Event, job: models.Job) -
             process_scan_source(REINDEX_JOB_TYPE, job, heartbeat)
         elif job.type == PURGE_JOB_TYPE:
             process_purge_source_content(job, heartbeat)
+        elif job.type == MEMORY_EXTRACTION_JOB_TYPE:
+            heartbeat.ensure_active()
+            process_extract_memory_suggestions(cfg, heartbeat, job)
         else:
             raise PermanentJobError(f"unsupported job type {job.type}")
 

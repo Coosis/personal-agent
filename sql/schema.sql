@@ -1,4 +1,6 @@
 DROP TABLE IF EXISTS agent_runs CASCADE;
+DROP TABLE IF EXISTS memory_suggestions CASCADE;
+DROP TABLE IF EXISTS memories CASCADE;
 DROP TABLE IF EXISTS messages CASCADE;
 DROP TABLE IF EXISTS conversations CASCADE;
 DROP TABLE IF EXISTS jobs CASCADE;
@@ -214,6 +216,46 @@ CREATE TABLE messages (
 
 CREATE INDEX idx_messages_conversation_id ON messages(conversation_id, sequence_number);
 CREATE INDEX idx_messages_status ON messages(status);
+
+CREATE TABLE memories (
+    id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    subject TEXT NOT NULL,
+    category TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived', 'deleted')),
+    confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+    source_id BIGINT REFERENCES sources(id) ON DELETE SET NULL,
+    document_id BIGINT REFERENCES documents(id) ON DELETE SET NULL,
+    message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_memories_status ON memories(status);
+CREATE INDEX idx_memories_subject_category ON memories(subject, category);
+CREATE INDEX idx_memories_created_at ON memories(created_at DESC);
+
+CREATE TABLE memory_suggestions (
+    id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    subject TEXT NOT NULL,
+    category TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected', 'expired')),
+    extractor_type TEXT NOT NULL,
+    source_id BIGINT REFERENCES sources(id) ON DELETE SET NULL,
+    document_id BIGINT REFERENCES documents(id) ON DELETE SET NULL,
+    message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL,
+    evidence_text TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_memory_suggestions_status ON memory_suggestions(status);
+CREATE INDEX idx_memory_suggestions_subject_category ON memory_suggestions(subject, category);
+CREATE INDEX idx_memory_suggestions_created_at ON memory_suggestions(created_at DESC);
 
 CREATE TABLE agent_runs (
     id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,

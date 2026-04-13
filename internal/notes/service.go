@@ -82,6 +82,15 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Note, error) 
 			return err
 		}
 
+		if _, err := jobqueue.Enqueue(ctx, q, "extract_memory_suggestions", map[string]any{
+			"note_id":     note.ID,
+			"source_id":   source.ID,
+			"document_id": document.ID,
+			"trigger":     "note_create",
+		}, jobqueue.ExtractMemorySuggestionsFromNoteDedupeKey(note.ID)); err != nil {
+			return err
+		}
+
 		created = toNote(note, &document.ID)
 		return nil
 	})
@@ -187,6 +196,15 @@ func (s *Service) Update(ctx context.Context, id int64, req UpdateRequest) (*Not
 			"document_id": document.ID,
 			"trigger":     "note_update",
 		}, jobqueue.ReindexDocumentDedupeKey(document.ID)); err != nil {
+			return err
+		}
+
+		if _, err := jobqueue.Enqueue(ctx, q, "extract_memory_suggestions", map[string]any{
+			"note_id":     note.ID,
+			"source_id":   note.SourceID,
+			"document_id": document.ID,
+			"trigger":     "note_update",
+		}, jobqueue.ExtractMemorySuggestionsFromNoteDedupeKey(note.ID)); err != nil {
 			return err
 		}
 

@@ -1,6 +1,7 @@
 """Flask entrypoint for the agent."""
 
 from collections.abc import Iterator
+from typing import Any
 from flask import Flask, Response, json, jsonify, request, stream_with_context
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
@@ -40,8 +41,9 @@ def decode_conversation_messages(payload) -> list:
 
     return messages
 
-def run_once(graph: CompiledGraph, content: str, history: list) -> Iterator[str]:
+def run_once(graph: CompiledGraph, content: str, history: list) -> Iterator[dict[str, Any]]:
     """Run the graph once for a single user input."""
+    final_state: dict[str, Any] | None = None
     for chunk in graph.stream(
             {
                 "user_input": content,
@@ -53,12 +55,19 @@ def run_once(graph: CompiledGraph, content: str, history: list) -> Iterator[str]
             subgraphs=True,
             ):
         if chunk["type"] == "custom":
-            yield chunk["data"][GENERATE_RESPONSE_STREAM_KEY]
+            yield {"type": "token", "content": chunk["data"][GENERATE_RESPONSE_STREAM_KEY]}
 
         elif chunk["type"] == "values":
-            pass
+            final_state = chunk["data"]
             # print("\n\nCurrent state:")
             # print(f"{json.dumps(pretty_print_state(chunk["data"]), indent=2)}")
+
+    if final_state is not None:
+        yield {
+            "type": "final",
+            "final_answer": final_state.get("final_answer", ""),
+            "citations": final_state.get("final_citations", []),
+        }
 
 
 def create_app(cfg, app_ctx: AppContext) -> Flask:
@@ -84,10 +93,20 @@ def create_app(cfg, app_ctx: AppContext) -> Flask:
     @app.post("/v1/stream")
     def stream():
         def generate(graph, content, history) -> Iterator[str]:
-            yield sse_event({"type": "start"}, event="signal")
-            for token in run_once(graph, content, history):
-                yield sse_event({"type": "token", "content": token}, event="message")
-            yield sse_event({"type": "stop"}, event="signal")
+            try:
+                yield sse_event({"type": "start"}, event="signal")
+                citations: list[dict[str, Any]] = []
+                for item in run_once(graph, content, history):
+                    if item["type"] == "token":
+                        yield sse_event({"type": "token", "content": item["content"]}, event="message")
+                    elif item["type"] == "final":
+                        raw_citations = item.get("citations", [])
+                        if isinstance(raw_citations, list):
+                            citations = [c for c in raw_citations if isinstance(c, dict)]
+                yield sse_event({"type": "stop", "citations": citations}, event="signal")
+            except GeneratorExit:
+                # Downstream client disconnected while streaming.
+                return
 
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):

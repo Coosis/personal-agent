@@ -12,6 +12,7 @@ import (
 	"github.com/Coosis/personal-agent/internal/agenthttp"
 	"github.com/Coosis/personal-agent/internal/apiutil"
 	"github.com/Coosis/personal-agent/internal/db"
+	"github.com/Coosis/personal-agent/internal/jobqueue"
 	sqlc "github.com/Coosis/personal-agent/sqlc"
 )
 
@@ -170,6 +171,16 @@ func (s *Service) prepareMessages(
 			return err
 		}
 
+		if _, err := jobqueue.Enqueue(ctx, q, "extract_memory_suggestions", map[string]any{
+			"message_id":      prepared.user.ID,
+			"conversation_id": conversationID,
+			"sequence_number": prepared.user.SequenceNumber,
+			"role":            prepared.user.Role,
+			"trigger":         "message_create",
+		}, jobqueue.ExtractMemorySuggestionsFromMessageDedupeKey(prepared.user.ID)); err != nil {
+			return err
+		}
+
 		prepared.assistant, err = q.CreateMessage(ctx, sqlc.CreateMessageParams{
 			ConversationID:  conversationID,
 			Role:            "assistant",
@@ -202,23 +213,28 @@ func (s *Service) runAssistantReplyStream(
 	onToken func(string) error,
 ) (sqlc.Message, error) {
 	var builder strings.Builder
+	streamResult := agenthttp.ChatStreamResult{
+		Citations: apiutil.DefaultJSONArray(),
+	}
 
 	// streaming part
-	err := s.agent.ChatStream(ctx, content, history, func(token string) error {
+	result, err := s.agent.ChatStream(ctx, content, history, func(token string) error {
 		builder.WriteString(token)
 		if onToken == nil {
 			return nil
 		}
 		return onToken(token)
 	})
+	streamResult = result
 	// streaming finished, clean up phase
 
 	finalizeCtx := context.WithoutCancel(ctx)
 	if err != nil {
-		failed, updateErr := s.db.Queries.UpdateMessageContentAndStatus(finalizeCtx, sqlc.UpdateMessageContentAndStatusParams{
-			ID:      assistant.ID,
-			Content: builder.String(),
-			Status:  "failed",
+		failed, updateErr := s.db.Queries.UpdateMessageFinal(finalizeCtx, sqlc.UpdateMessageFinalParams{
+			ID:        assistant.ID,
+			Content:   builder.String(),
+			Status:    "failed",
+			Citations: apiutil.DefaultJSONArray(),
 		})
 		if updateErr != nil {
 			return assistant, fmt.Errorf("agent stream failed: %w; additionally failed to mark message failed: %v", err, updateErr)
@@ -226,10 +242,11 @@ func (s *Service) runAssistantReplyStream(
 		return failed, err
 	}
 
-	completed, err := s.db.Queries.UpdateMessageContentAndStatus(finalizeCtx, sqlc.UpdateMessageContentAndStatusParams{
-		ID:      assistant.ID,
-		Content: builder.String(),
-		Status:  "completed",
+	completed, err := s.db.Queries.UpdateMessageFinal(finalizeCtx, sqlc.UpdateMessageFinalParams{
+		ID:        assistant.ID,
+		Content:   builder.String(),
+		Status:    "completed",
+		Citations: streamResult.Citations,
 	})
 	if err != nil {
 		return assistant, err

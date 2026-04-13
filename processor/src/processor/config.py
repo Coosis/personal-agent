@@ -13,6 +13,8 @@ DEFAULT_EMBEDDING_DIMENSIONS = 1024
 DEFAULT_POLL_INTERVAL_SECONDS = 5
 DEFAULT_CHUNK_SIZE = 512
 DEFAULT_CHUNK_OVERLAP = 50
+DEFAULT_OPENROUTER_MODEL = "qwen/qwen-2.5-72b-instruct"
+DEFAULT_OPENROUTER_API_URL = "https://openrouter.ai/api/v1"
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,9 @@ class Config:
     alibaba_api_key: str = ""
     alibaba_embedding_model: str = DEFAULT_ALIBABA_EMBEDDING_MODEL
     embedding_dimensions: int = DEFAULT_EMBEDDING_DIMENSIONS
+    openrouter_api_key: str = ""
+    openrouter_model: str = DEFAULT_OPENROUTER_MODEL
+    openrouter_api_url: str = DEFAULT_OPENROUTER_API_URL
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     chunk_size: int = DEFAULT_CHUNK_SIZE
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
@@ -60,6 +65,9 @@ def get_config() -> Config:
         alibaba_api_key=os.getenv("ALIBABA_API_KEY", ""),
         alibaba_embedding_model=os.getenv("ALIBABA_EMBEDDING_MODEL", DEFAULT_ALIBABA_EMBEDDING_MODEL),
         embedding_dimensions=int(os.getenv("EMBEDDING_DIMENSIONS", DEFAULT_EMBEDDING_DIMENSIONS)),
+        openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
+        openrouter_model=os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL),
+        openrouter_api_url=os.getenv("OPENROUTER_API_URL", DEFAULT_OPENROUTER_API_URL),
         poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS)),
         chunk_size=int(os.getenv("CHUNK_SIZE", DEFAULT_CHUNK_SIZE)),
         chunk_overlap=int(os.getenv("CHUNK_OVERLAP", DEFAULT_CHUNK_OVERLAP)),

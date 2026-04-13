@@ -12,6 +12,7 @@ class AgentState(TypedDict):
 
     intent: str
     retrieved_context: str
+    retrieved_citations: list[dict[str, object]]
     question_type: str
     knowledge_scope: str
     needs_retrieval: bool
@@ -19,6 +20,7 @@ class AgentState(TypedDict):
     missing_information: str
 
     final_answer: str
+    final_citations: list[dict[str, object]]
 
 class AgentStateUpdate(TypedDict, total=False):
     user_input: str
@@ -27,6 +29,7 @@ class AgentStateUpdate(TypedDict, total=False):
 
     intent: str
     retrieved_context: str
+    retrieved_citations: list[dict[str, object]]
     question_type: str
     knowledge_scope: str
     needs_retrieval: bool
@@ -34,6 +37,7 @@ class AgentStateUpdate(TypedDict, total=False):
     missing_information: str
 
     final_answer: str
+    final_citations: list[dict[str, object]]
 
 def pretty_print_state(state: AgentState) -> dict:
     return {
@@ -42,12 +46,14 @@ def pretty_print_state(state: AgentState) -> dict:
         "conversation_messages": [str(msg) for msg in state["conversation_messages"]],
         "intent": state.get("intent", ""),
         "retrieved_context": state.get("retrieved_context", ""),
+        "retrieved_citations": state.get("retrieved_citations", []),
         "question_type": state.get("question_type", ""),
         "knowledge_scope": state.get("knowledge_scope", ""),
         "needs_retrieval": state.get("needs_retrieval", False),
         "retrieval_query": state.get("retrieval_query", ""),
         "missing_information": state.get("missing_information", ""),
         "final_answer": state.get("final_answer", ""),
+        "final_citations": state.get("final_citations", []),
     }
 
 def should_call_tool(state: AgentState) -> bool:

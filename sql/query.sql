@@ -601,10 +601,11 @@ INSERT INTO messages (
     $13
 ) RETURNING *;
 
--- name: UpdateMessageContentAndStatus :one
+-- name: UpdateMessageFinal :one
 UPDATE messages
 SET content = @content,
     status = @status,
+    citations = @citations,
     updated_at = NOW()
 WHERE id = @id
 RETURNING *;
@@ -627,6 +628,179 @@ ORDER BY sequence_number;
 SELECT COALESCE(MAX(sequence_number), 0)::int4
 FROM messages
 WHERE conversation_id = $1;
+
+-- name: GetMessageByID :one
+SELECT *
+FROM messages
+WHERE id = $1;
+
+-- Memories
+-- name: CreateMemory :one
+INSERT INTO memories (
+    subject,
+    category,
+    key,
+    value,
+    status,
+    confidence,
+    source_id,
+    document_id,
+    message_id
+) VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8,
+    $9
+) RETURNING *;
+
+-- name: ListMemories :many
+SELECT *
+FROM memories
+WHERE (@query::text = '' OR subject ILIKE '%' || @query || '%' OR category ILIKE '%' || @query || '%' OR key ILIKE '%' || @query || '%' OR value ILIKE '%' || @query || '%')
+  AND (
+    (@status::text <> '' AND status = @status)
+    OR (
+      @status::text = ''
+      AND (@include_archived::bool OR status <> 'archived')
+      AND (@include_deleted::bool OR status <> 'deleted')
+    )
+  )
+ORDER BY updated_at DESC, id DESC
+LIMIT @memory_limit OFFSET @memory_offset;
+
+-- name: GetMemoryByID :one
+SELECT *
+FROM memories
+WHERE id = $1;
+
+-- name: UpdateMemory :one
+UPDATE memories
+SET subject = $2,
+    category = $3,
+    key = $4,
+    value = $5,
+    status = $6,
+    confidence = $7,
+    source_id = $8,
+    document_id = $9,
+    message_id = $10,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateMemoryStatus :one
+UPDATE memories
+SET status = $2,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: ArchiveActiveMemoriesBySubjectCategoryKeyExceptID :exec
+UPDATE memories
+SET status = 'archived',
+    updated_at = NOW()
+WHERE status = 'active'
+  AND subject = $1
+  AND category = $2
+  AND key = $3
+  AND id <> $4;
+
+-- name: FindActiveMemoryMatch :one
+SELECT *
+FROM memories
+WHERE status = 'active'
+  AND subject = $1
+  AND category = $2
+  AND key = $3
+  AND value = $4
+ORDER BY updated_at DESC, id DESC
+LIMIT 1;
+
+-- name: SearchActiveMemories :many
+SELECT *
+FROM memories
+WHERE status = 'active'
+  AND (@query::text = '' OR subject ILIKE '%' || @query || '%' OR category ILIKE '%' || @query || '%' OR key ILIKE '%' || @query || '%' OR value ILIKE '%' || @query || '%')
+ORDER BY updated_at DESC, id DESC
+LIMIT @memory_limit OFFSET @memory_offset;
+
+-- name: ListActiveMemoriesBySubject :many
+SELECT *
+FROM memories
+WHERE status = 'active'
+  AND subject = $1
+ORDER BY updated_at DESC, id DESC
+LIMIT $2 OFFSET $3;
+
+-- Memory Suggestions
+-- name: CreateMemorySuggestion :one
+INSERT INTO memory_suggestions (
+    subject,
+    category,
+    key,
+    value,
+    confidence,
+    status,
+    extractor_type,
+    source_id,
+    document_id,
+    message_id,
+    evidence_text
+) VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8,
+    $9,
+    $10,
+    $11
+) RETURNING *;
+
+-- name: ListMemorySuggestions :many
+SELECT *
+FROM memory_suggestions
+WHERE (@query::text = '' OR subject ILIKE '%' || @query || '%' OR category ILIKE '%' || @query || '%' OR key ILIKE '%' || @query || '%' OR value ILIKE '%' || @query || '%' OR evidence_text ILIKE '%' || @query || '%')
+  AND (
+    (@status::text <> '' AND status = @status)
+    OR (@status::text = '' AND status = 'pending')
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT @suggestion_limit OFFSET @suggestion_offset;
+
+-- name: GetMemorySuggestionByID :one
+SELECT *
+FROM memory_suggestions
+WHERE id = $1;
+
+-- name: UpdateMemorySuggestionStatus :one
+UPDATE memory_suggestions
+SET status = $2,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: FindPendingMemorySuggestionMatch :one
+SELECT *
+FROM memory_suggestions
+WHERE status = 'pending'
+  AND subject = $1
+  AND category = $2
+  AND key = $3
+  AND value = $4
+  AND source_id IS NOT DISTINCT FROM $5
+  AND document_id IS NOT DISTINCT FROM $6
+  AND message_id IS NOT DISTINCT FROM $7
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
 
 -- Agent Runs
 -- name: CreateAgentRun :one

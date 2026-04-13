@@ -17,6 +17,8 @@ import (
 	"github.com/Coosis/personal-agent/internal/db"
 	"github.com/Coosis/personal-agent/internal/documents"
 	"github.com/Coosis/personal-agent/internal/jobs"
+	"github.com/Coosis/personal-agent/internal/memories"
+	"github.com/Coosis/personal-agent/internal/memorysuggestions"
 	"github.com/Coosis/personal-agent/internal/notes"
 	"github.com/Coosis/personal-agent/internal/search"
 	"github.com/Coosis/personal-agent/internal/sources"
@@ -39,10 +41,12 @@ func New(cfg *config.Config, database *db.DB) (*Server, error) {
 
 	s := &Server{
 		httpServer: &http.Server{
-			Addr:         fmt.Sprintf("%s:%s", cfg.Host, cfg.Port),
-			Handler:      router,
-			ReadTimeout:  30 * time.Second,
-			WriteTimeout: 30 * time.Second,
+			Addr:        fmt.Sprintf("%s:%s", cfg.Host, cfg.Port),
+			Handler:     router,
+			ReadTimeout: 30 * time.Second,
+			// Disable total write timeout so SSE responses can stream longer
+			// than 30 seconds without the server killing the connection.
+			WriteTimeout: 0,
 		},
 		config: cfg,
 		db:     database,
@@ -59,6 +63,8 @@ func (s *Server) registerRoutes(r *gin.Engine) {
 	})
 
 	notes.NewHandler(notes.NewService(s.db)).RegisterRoutes(api)
+	memories.NewHandler(memories.NewService(s.db)).RegisterRoutes(api)
+	memorysuggestions.NewHandler(memorysuggestions.NewService(s.db)).RegisterRoutes(api)
 	uploads.NewHandler(uploads.NewService(s.db, s.config.StorageRoot)).RegisterRoutes(api)
 	sources.NewHandler(sources.NewService(s.db)).RegisterRoutes(api)
 	documents.NewHandler(documents.NewService(s.db)).RegisterRoutes(api)
