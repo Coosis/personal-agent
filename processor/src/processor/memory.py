@@ -6,8 +6,6 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
-
 from processor.config import Config
 from processor.db import (
     CreateMemorySuggestionParams,
@@ -16,6 +14,7 @@ from processor.db import (
     transaction,
 )
 from processor.heartbeat import Heartbeat
+from processor.llm import ensure_extraction_api_key, post_chat_completion
 from processor.memory_prompt import SYSTEM_PROMPT, build_user_prompt
 from processor.runtime import PermanentJobError, coerce_int, ensure_mapping
 from sqlc.pydb.models import Job
@@ -127,32 +126,25 @@ def extract_memory_suggestions(
     content: str,
     title: str = "",
 ) -> list[SuggestionPayload]:
-    if not cfg.openrouter_api_key:
-        raise PermanentJobError("OPENROUTER_API_KEY is required for memory extraction")
+    ensure_extraction_api_key(cfg, "memory extraction")
 
     trimmed = content.strip()
     if not trimmed:
         return []
 
     heartbeat.ensure_active()
-    response = httpx.post(
-        f"{cfg.openrouter_api_url.rstrip('/')}/chat/completions",
-        headers={
-            "Authorization": f"Bearer {cfg.openrouter_api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": cfg.memory_extraction_model,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": build_user_prompt(kind=kind, title=title, content=trimmed),
-                },
-            ],
-        },
+    response = post_chat_completion(
+        cfg,
+        model=cfg.extraction_model,
+        temperature=0,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": build_user_prompt(kind=kind, title=title, content=trimmed),
+            },
+        ],
         timeout=60,
     )
     response.raise_for_status()

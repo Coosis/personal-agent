@@ -19,14 +19,14 @@ from agent.state import AgentState, AgentStateUpdate
 def build_nodes(cfg: Config, tools) -> dict:
     """Build node callables bound to runtime configuration."""
     model = ChatOpenAI(
-        model=cfg.openrouter_model,
-        api_key=lambda: cfg.openrouter_api_key,
-        base_url=cfg.openrouter_api_url,
+        model=cfg.agent_model,
+        api_key=lambda: cfg.agent_api_key,
+        base_url=cfg.agent_base_url,
     )
     tool_model = ChatOpenAI(
-        model=cfg.openrouter_model,
-        api_key=lambda: cfg.openrouter_api_key,
-        base_url=cfg.openrouter_api_url,
+        model=cfg.agent_model,
+        api_key=lambda: cfg.agent_api_key,
+        base_url=cfg.agent_base_url,
     ).bind_tools(tools)
 
     def commit_agent_response(state: AgentState) -> AgentStateUpdate:

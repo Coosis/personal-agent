@@ -1280,7 +1280,7 @@ personal-agent/
 | Database | PostgreSQL + pgvector | metadata, jobs, chunks, vectors |
 | Codegen | `sqlc` | type-safe SQL access |
 | Embeddings | Alibaba DashScope | vector embeddings |
-| Chat LLM | OpenRouter | grounded responses and workflows |
+| Chat LLM | OpenAI-compatible endpoint | grounded responses and workflows |
 
 ---
 
@@ -1390,8 +1390,14 @@ ALIBABA_API_KEY=sk-...
 ALIBABA_EMBEDDING_MODEL=text-embedding-v4
 
 # Chat LLM
-OPENROUTER_API_KEY=sk-or-...
-OPENROUTER_MODEL=qwen-max
+AGENT_API_KEY=sk-...
+AGENT_MODEL=your-agent-model-id
+AGENT_BASE_URL=https://your-agent-openai-compatible-endpoint/v1
+
+# Extraction LLM
+EXTRACTION_API_KEY=sk-...
+EXTRACTION_MODEL=your-extraction-model-id
+EXTRACTION_BASE_URL=https://your-extraction-openai-compatible-endpoint/v1
 
 # API
 API_PORT=8080

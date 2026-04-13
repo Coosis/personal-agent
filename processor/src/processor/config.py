@@ -13,9 +13,6 @@ DEFAULT_EMBEDDING_DIMENSIONS = 1024
 DEFAULT_POLL_INTERVAL_SECONDS = 5
 DEFAULT_CHUNK_SIZE = 512
 DEFAULT_CHUNK_OVERLAP = 50
-DEFAULT_OPENROUTER_MODEL = "qwen/qwen-2.5-72b-instruct"
-DEFAULT_OPENROUTER_API_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MEMORY_EXTRACTION_MODEL = DEFAULT_OPENROUTER_MODEL
 DEFAULT_DB_STATEMENT_TIMEOUT_MS = 45000
 DEFAULT_DB_LOCK_TIMEOUT_MS = 5000
 
@@ -29,10 +26,9 @@ class Config:
     alibaba_api_key: str = ""
     alibaba_embedding_model: str = DEFAULT_ALIBABA_EMBEDDING_MODEL
     embedding_dimensions: int = DEFAULT_EMBEDDING_DIMENSIONS
-    openrouter_api_key: str = ""
-    openrouter_model: str = DEFAULT_OPENROUTER_MODEL
-    openrouter_api_url: str = DEFAULT_OPENROUTER_API_URL
-    memory_extraction_model: str = DEFAULT_MEMORY_EXTRACTION_MODEL
+    extraction_api_key: str = ""
+    extraction_model: str = ""
+    extraction_base_url: str = ""
     db_statement_timeout_ms: int = DEFAULT_DB_STATEMENT_TIMEOUT_MS
     db_lock_timeout_ms: int = DEFAULT_DB_LOCK_TIMEOUT_MS
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
@@ -45,8 +41,12 @@ def validate_config(cfg: Config) -> None:
         raise ValueError("DATABASE_URL environment variable is required")
     if not cfg.alibaba_api_key:
         raise ValueError("ALIBABA_API_KEY environment variable is required")
-    if not cfg.memory_extraction_model:
-        raise ValueError("MEMORY_EXTRACTION_MODEL cannot be empty")
+    if not cfg.extraction_api_key:
+        raise ValueError("EXTRACTION_API_KEY environment variable is required")
+    if not cfg.extraction_model:
+        raise ValueError("EXTRACTION_MODEL cannot be empty")
+    if not cfg.extraction_base_url:
+        raise ValueError("EXTRACTION_BASE_URL cannot be empty")
     if cfg.db_statement_timeout_ms <= 0:
         raise ValueError("DB_STATEMENT_TIMEOUT_MS must be positive")
     if cfg.db_lock_timeout_ms <= 0:
@@ -85,13 +85,9 @@ def get_config() -> Config:
             "ALIBABA_EMBEDDING_MODEL", DEFAULT_ALIBABA_EMBEDDING_MODEL
         ),
         embedding_dimensions=int(os.getenv("EMBEDDING_DIMENSIONS", DEFAULT_EMBEDDING_DIMENSIONS)),
-        openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
-        openrouter_model=os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL),
-        openrouter_api_url=os.getenv("OPENROUTER_API_URL", DEFAULT_OPENROUTER_API_URL),
-        memory_extraction_model=os.getenv(
-            "MEMORY_EXTRACTION_MODEL",
-            os.getenv("OPENROUTER_MODEL", DEFAULT_MEMORY_EXTRACTION_MODEL),
-        ),
+        extraction_api_key=os.getenv("EXTRACTION_API_KEY", ""),
+        extraction_model=os.getenv("EXTRACTION_MODEL", ""),
+        extraction_base_url=os.getenv("EXTRACTION_BASE_URL", ""),
         db_statement_timeout_ms=int(
             os.getenv("DB_STATEMENT_TIMEOUT_MS", DEFAULT_DB_STATEMENT_TIMEOUT_MS)
         ),

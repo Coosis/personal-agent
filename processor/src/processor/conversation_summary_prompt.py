@@ -8,7 +8,7 @@ import json
 SYSTEM_PROMPT = """
 You maintain a rolling cross-chat conversation summary for a personal knowledge agent.
 
-Return JSON only with this shape:
+Return only JSON with this shape, no other text or markdown:
 {{
   "summary_text": "compact paragraph summary",
   "keywords": ["keyword"],
@@ -17,7 +17,8 @@ Return JSON only with this shape:
   "project_state": [
     {{
       "name": "project or context name",
-      "status": "current status or focus",
+      "decision": "current status or focus",
+      "options": ["next option"],
     }}
   ],
   "candidate_memories": [
@@ -44,7 +45,6 @@ Rules:
   - `lunch` -> also include `food`, `meal`
   - `protein` -> also include `food`, `nutrition`
   - `postgres` -> also include `database`, `sql`
-- Do not wrap keywords in quotes.
 - Keep lists small:
   - `keywords`: at most 12
   - `active_topics`: at most 3
@@ -68,7 +68,7 @@ Use exactly this shape:
   "keywords": ["keyword"],
   "active_topics": ["topic"],
   "entities": ["entity"],
-  "project_state": [{"name": "name", "status": "status"}],
+  "project_state": [{"name": "name", "decision": "decision", "options": ["option"]}],
   "candidate_memories": [{"category": "category", "key": "key", "value": "value"}]
 }
 

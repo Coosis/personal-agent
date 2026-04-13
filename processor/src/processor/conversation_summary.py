@@ -8,12 +8,12 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
 from psycopg.types.json import Jsonb
 
 from processor.config import Config
 from processor.db import query, transaction
 from processor.heartbeat import Heartbeat
+from processor.llm import ensure_extraction_api_key, post_chat_completion
 from processor.conversation_summary_prompt import (
     RETRY_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
@@ -24,6 +24,7 @@ from sqlc.pydb.models import Job
 from sqlc.pydb.query import UpsertConversationSummaryParams
 
 logger = logging.getLogger(__name__)
+FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -203,8 +204,7 @@ def generate_summary(
     previous_state: dict[str, Any],
     transcript: str,
 ) -> dict[str, Any]:
-    if not cfg.openrouter_api_key:
-        raise PermanentJobError("OPENROUTER_API_KEY is required for conversation summaries")
+    ensure_extraction_api_key(cfg, "conversation summaries")
 
     heartbeat.ensure_active()
     user_prompt = build_user_prompt(
@@ -213,15 +213,22 @@ def generate_summary(
         previous_state=previous_state,
         transcript=transcript,
     )
-    return request_summary_json(
-        cfg=cfg,
-        heartbeat=heartbeat,
-        system_prompt=SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        max_tokens=320,
-        retry_system_prompt=RETRY_SYSTEM_PROMPT,
-        retry_max_tokens=220,
-    )
+    try:
+        return request_summary_json(
+            cfg=cfg,
+            heartbeat=heartbeat,
+            system_prompt=SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            max_tokens=320,
+            retry_system_prompt=RETRY_SYSTEM_PROMPT,
+            retry_max_tokens=420,
+        )
+    except (json.JSONDecodeError, PermanentJobError) as exc:
+        logger.warning(
+            "summary model did not return usable structured output, using transcript fallback: %s",
+            exc,
+        )
+        return build_fallback_summary_payload(previous_summary, transcript)
 
 
 def request_summary_json(
@@ -241,9 +248,13 @@ def request_summary_json(
         max_tokens=max_tokens,
     )
     try:
-        parsed = json.loads(raw_content)
-    except json.JSONDecodeError:
-        logger.warning("summary JSON parse failed, retrying with compact prompt")
+        parsed = parse_summary_json(raw_content)
+    except (json.JSONDecodeError, PermanentJobError) as exc:
+        logger.warning(
+            "summary structured parse failed, retrying with compact prompt: %s; preview=%r",
+            exc,
+            raw_content[:240],
+        )
         heartbeat.ensure_active()
         raw_content = request_summary_content(
             cfg=cfg,
@@ -252,7 +263,15 @@ def request_summary_json(
             user_prompt=user_prompt,
             max_tokens=retry_max_tokens,
         )
-        parsed = json.loads(raw_content)
+        try:
+            parsed = parse_summary_json(raw_content)
+        except (json.JSONDecodeError, PermanentJobError) as retry_exc:
+            logger.error(
+                "summary structured parse failed after retry: %s; preview=%r",
+                retry_exc,
+                raw_content[:240],
+            )
+            raise
 
     if not isinstance(parsed, dict):
         raise PermanentJobError("conversation summary response has invalid payload")
@@ -266,22 +285,16 @@ def request_summary_content(
     user_prompt: str,
     max_tokens: int,
 ) -> str:
-    response = httpx.post(
-        f"{cfg.openrouter_api_url.rstrip('/')}/chat/completions",
-        headers={
-            "Authorization": f"Bearer {cfg.openrouter_api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": cfg.openrouter_model,
-            "temperature": 0,
-            "max_tokens": max_tokens,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        },
+    response = post_chat_completion(
+        cfg,
+        model=cfg.extraction_model,
+        temperature=0,
+        max_tokens=max_tokens,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
         timeout=60,
     )
     response.raise_for_status()
@@ -297,6 +310,79 @@ def request_summary_content(
     logger.info("summary model returned %s chars of JSON content", len(raw_content))
     heartbeat.ensure_active()
     return raw_content
+
+
+def parse_summary_json(raw_content: str) -> dict[str, Any]:
+    candidate = raw_content.strip()
+    if not candidate:
+        raise json.JSONDecodeError("empty content", raw_content, 0)
+
+    for option in iter_json_candidates(candidate):
+        try:
+            parsed = json.loads(option)
+            break
+        except json.JSONDecodeError:
+            continue
+    else:
+        raise json.JSONDecodeError("Expecting value", raw_content, 0)
+
+    if not isinstance(parsed, dict):
+        raise PermanentJobError("conversation summary response has invalid payload")
+    return parsed
+
+
+def iter_json_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        normalized = value.strip()
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        candidates.append(normalized)
+
+    add(text)
+    for match in FENCED_JSON_RE.finditer(text):
+        add(match.group(1))
+
+    extracted_object = extract_first_json_value(text, "{", "}")
+    add(extracted_object)
+
+    extracted_array = extract_first_json_value(text, "[", "]")
+    add(extracted_array)
+    return candidates
+
+
+def extract_first_json_value(text: str, open_char: str, close_char: str) -> str:
+    start = text.find(open_char)
+    if start == -1:
+        return text
+
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == open_char:
+            depth += 1
+        elif char == close_char:
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+
+    return text
 
 
 def format_summary_messages(messages: list[Any]) -> str:
@@ -433,6 +519,46 @@ def build_metadata_text(metadata: dict[str, Any]) -> str:
         parts.append(item["key"])
         parts.append(item["value"])
     return "\n".join(parts)
+
+
+def build_fallback_summary_payload(previous_summary: str, transcript: str) -> dict[str, Any]:
+    summary_text = summarize_transcript_fallback(transcript)
+    if not summary_text:
+        summary_text = previous_summary.strip()
+
+    return {
+        "summary_text": summary_text[:500],
+        "keywords": [],
+        "active_topics": [],
+        "entities": [],
+        "project_state": [],
+        "candidate_memories": [],
+    }
+
+
+def summarize_transcript_fallback(transcript: str) -> str:
+    lines = [line.strip() for line in transcript.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    # Use the most recent messages as a plain-text fallback when the provider
+    # refuses structured output entirely.
+    recent = lines[-2:]
+    content_parts: list[str] = []
+    for line in recent:
+        if ":" in line:
+            _, _, content = line.partition(":")
+            value = " ".join(content.strip().split())
+        else:
+            value = " ".join(line.split())
+        if value:
+            content_parts.append(value)
+
+    summary = " ".join(content_parts)
+    words = summary.split()
+    if len(words) > 80:
+        summary = " ".join(words[:80])
+    return summary
 
 
 def normalize_keyword(raw: str) -> str:

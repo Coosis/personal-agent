@@ -3,9 +3,6 @@
 import os
 from dataclasses import dataclass
 
-DEFAULT_MODEL = "minimax/minimax-m2.7"
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8090
 
@@ -15,9 +12,9 @@ DEFAULT_EMBEDDING_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/e
 
 @dataclass(frozen=True)
 class Config:
-    openrouter_api_key: str = ""
-    openrouter_model: str = DEFAULT_MODEL
-    openrouter_api_url: str = OPENROUTER_BASE_URL
+    agent_api_key: str = ""
+    agent_model: str = ""
+    agent_base_url: str = ""
 
     embedding_api_key: str = ""
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
@@ -31,12 +28,12 @@ class Config:
 
 
 def validate_settings(settings: Config) -> None:
-    if settings.openrouter_api_key == "":
-        raise ValueError("OPENROUTER_API_KEY environment variable is required")
-    if settings.openrouter_model == "":
-        raise ValueError("OPENROUTER_MODEL environment variable cannot be empty")
-    if settings.openrouter_api_url == "":
-        raise ValueError("OPENROUTER_API_URL environment variable cannot be empty")
+    if settings.agent_api_key == "":
+        raise ValueError("AGENT_API_KEY environment variable is required")
+    if settings.agent_model == "":
+        raise ValueError("AGENT_MODEL environment variable cannot be empty")
+    if settings.agent_base_url == "":
+        raise ValueError("AGENT_BASE_URL environment variable cannot be empty")
 
     if settings.embedding_api_key == "":
         raise ValueError("ALIBABA_API_KEY environment variable is required for embeddings")
@@ -63,9 +60,9 @@ def validate_settings(settings: Config) -> None:
 
 def get_config() -> Config:
     s = Config(
-        openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
-        openrouter_model=os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL),
-        openrouter_api_url=os.getenv("OPENROUTER_API_URL", OPENROUTER_BASE_URL),
+        agent_api_key=os.getenv("AGENT_API_KEY", ""),
+        agent_model=os.getenv("AGENT_MODEL", ""),
+        agent_base_url=os.getenv("AGENT_BASE_URL", ""),
         embedding_api_key=os.getenv("ALIBABA_API_KEY", ""),
         embedding_model=os.getenv("ALIBABA_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
         embedding_api_url=os.getenv("ALIBABA_EMBEDDING_API_URL", DEFAULT_EMBEDDING_API_URL),
